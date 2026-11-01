@@ -5,17 +5,19 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 
-use windows::core::{PCSTR, PCWSTR};
-use windows::Win32::Foundation::{FreeLibrary, FILETIME, HMODULE, ERROR_SUCCESS};
-use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE};
+use windows::Win32::Foundation::{ERROR_SUCCESS, FILETIME, FreeLibrary, HMODULE};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
+};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Performance::{
+    PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA,
     PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
-    PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
-    PDH_MORE_DATA,
+    PdhOpenQueryW,
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::GetSystemTimes;
+use windows::core::{PCSTR, PCWSTR};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sample {
@@ -79,7 +81,13 @@ impl PdhState {
             }
             let _ = PdhCollectQueryData(query);
         }
-        Some(Self { query, engine, vram, tag: tag.to_string(), buf: Vec::new() })
+        Some(Self {
+            query,
+            engine,
+            vram,
+            tag: tag.to_string(),
+            buf: Vec::new(),
+        })
     }
 }
 
@@ -113,7 +121,12 @@ impl Nvml {
                 let _ = FreeLibrary(lib);
                 return None;
             }
-            Some(Self { lib, device, get_temp, get_clock })
+            Some(Self {
+                lib,
+                device,
+                get_temp,
+                get_clock,
+            })
         }
     }
 
@@ -134,7 +147,13 @@ impl Drop for Nvml {
 
 impl Metrics {
     pub fn new() -> Self {
-        Self { started: false, prev: None, adapter: None, pdh: None, nvml: None }
+        Self {
+            started: false,
+            prev: None,
+            adapter: None,
+            pdh: None,
+            nvml: None,
+        }
     }
 
     pub fn poll(&mut self) -> Sample {
@@ -169,7 +188,13 @@ impl Metrics {
 
         if let (Some(pdh), Some(ad)) = (self.pdh.as_mut(), self.adapter.as_ref()) {
             let _ = unsafe { PdhCollectQueryData(pdh.query) };
-            let PdhState { buf, tag, engine, vram, .. } = pdh;
+            let PdhState {
+                buf,
+                tag,
+                engine,
+                vram,
+                ..
+            } = pdh;
             if let Some(v) = sum_instances(buf, *engine, tag) {
                 s.gpu = Some((v as f32).clamp(0.0, 100.0));
             }
@@ -217,9 +242,12 @@ fn pick_adapter() -> Option<Adapter> {
         if d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
             continue;
         }
-        if best.as_ref().is_none_or(|b: &windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_DESC1| {
-            d.DedicatedVideoMemory > b.DedicatedVideoMemory
-        }) {
+        if best
+            .as_ref()
+            .is_none_or(|b: &windows::Win32::Graphics::Dxgi::DXGI_ADAPTER_DESC1| {
+                d.DedicatedVideoMemory > b.DedicatedVideoMemory
+            })
+        {
             best = Some(d);
         }
     }
@@ -256,8 +284,12 @@ fn sum_instances(buf: &mut Vec<u64>, counter: PDH_HCOUNTER, tag: &str) -> Option
         return None;
     }
     // SAFETY: PDH filled `count` items of PDH_FMT_COUNTERVALUE_ITEM_W into our 8-byte-aligned buffer.
-    let items =
-        unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const PDH_FMT_COUNTERVALUE_ITEM_W, count as usize) };
+    let items = unsafe {
+        std::slice::from_raw_parts(
+            buf.as_ptr() as *const PDH_FMT_COUNTERVALUE_ITEM_W,
+            count as usize,
+        )
+    };
     let mut total = 0.0;
     let mut found = false;
     for it in items {
@@ -289,7 +321,11 @@ fn contains_ci(hay: *const u16, needle: &[u8]) -> bool {
 }
 
 fn system_times() -> Option<(u64, u64, u64)> {
-    let (mut idle, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
+    let (mut idle, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
     unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)).ok()? };
     Some((ft(idle), ft(kernel), ft(user)))
 }
@@ -299,7 +335,10 @@ fn ft(t: FILETIME) -> u64 {
 }
 
 fn ram() -> Option<(f32, f32)> {
-    let mut m = MEMORYSTATUSEX { dwLength: size_of::<MEMORYSTATUSEX>() as u32, ..unsafe { std::mem::zeroed() } };
+    let mut m = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
     unsafe { GlobalMemoryStatusEx(&mut m).ok()? };
     let total = m.ullTotalPhys as f64;
     Some((gib(total - m.ullAvailPhys as f64), gib(total)))
@@ -326,7 +365,9 @@ mod tests {
 
     #[test]
     fn contains_ci_works() {
-        let name: Vec<u16> = "pid_7_luid_0x000151E4_phys_0_engtype_3D\0".encode_utf16().collect();
+        let name: Vec<u16> = "pid_7_luid_0x000151E4_phys_0_engtype_3D\0"
+            .encode_utf16()
+            .collect();
         assert!(contains_ci(name.as_ptr(), b"luid_0x000151e4"));
         assert!(!contains_ci(name.as_ptr(), b"luid_0x00018cd5"));
     }
@@ -359,4 +400,3 @@ mod tests {
         assert!((0.0..=100.0).contains(&cpu), "cpu out of range: {cpu}");
     }
 }
-

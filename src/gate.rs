@@ -47,7 +47,13 @@ impl GameGate {
         }
     }
 
-    pub fn on_foreground(&mut self, pid: Option<u32>, exe: Option<&str>, cfg: &Config, now_ms: u64) -> GateOut {
+    pub fn on_foreground(
+        &mut self,
+        pid: Option<u32>,
+        exe: Option<&str>,
+        cfg: &Config,
+        now_ms: u64,
+    ) -> GateOut {
         // WinEvent can re-fire for the same window; keep the foreground period.
         // An earlier event without the exe name still needs re-evaluating.
         if pid.is_some() && pid == self.pid && (self.candidate || exe.is_none()) {
@@ -58,14 +64,26 @@ impl GameGate {
         self.backoff = false;
         self.fg_since_ms = now_ms;
         self.candidate = match (pid, exe) {
-            (Some(p), Some(e)) => p != std::process::id() && !cfg.ignore.iter().any(|i| i.eq_ignore_ascii_case(e)),
+            (Some(p), Some(e)) => {
+                p != std::process::id() && !cfg.ignore.iter().any(|i| i.eq_ignore_ascii_case(e))
+            }
             _ => false,
         };
-        self.providers = if self.candidate { Providers::UserMode } else { Providers::Off };
+        self.providers = if self.candidate {
+            Providers::UserMode
+        } else {
+            Providers::Off
+        };
         self.out(None)
     }
 
-    pub fn on_tick(&mut self, sample: Option<(u32, f32, u64)>, saw_user_mode: bool, cfg: &Config, now_ms: u64) -> GateOut {
+    pub fn on_tick(
+        &mut self,
+        sample: Option<(u32, f32, u64)>,
+        saw_user_mode: bool,
+        cfg: &Config,
+        now_ms: u64,
+    ) -> GateOut {
         if !self.candidate {
             return self.out(None);
         }
@@ -90,7 +108,11 @@ impl GameGate {
                 self.qualified = true;
             }
         }
-        self.out(if self.qualified { fresh.map(|(_, fps, _)| fps) } else { None })
+        self.out(if self.qualified {
+            fresh.map(|(_, fps, _)| fps)
+        } else {
+            None
+        })
     }
 
     pub fn toggle(&mut self) -> GateOut {
@@ -104,7 +126,12 @@ impl GameGate {
 
     fn out(&self, fps: Option<f32>) -> GateOut {
         if !self.candidate {
-            return GateOut { timer: Timer::Off, providers: Providers::Off, visible: false, fps: None };
+            return GateOut {
+                timer: Timer::Off,
+                providers: Providers::Off,
+                visible: false,
+                fps: None,
+            };
         }
         GateOut {
             timer: if self.qualified {
@@ -163,8 +190,14 @@ mod tests {
     fn kernel_fallback_after_1500ms() {
         let cfg = Config::default();
         let mut g = gate_at(&cfg, 1000);
-        assert_eq!(g.on_tick(None, false, &cfg, 2499).providers, Providers::UserMode);
-        assert_eq!(g.on_tick(None, false, &cfg, 2500).providers, Providers::WithKernel);
+        assert_eq!(
+            g.on_tick(None, false, &cfg, 2499).providers,
+            Providers::UserMode
+        );
+        assert_eq!(
+            g.on_tick(None, false, &cfg, 2500).providers,
+            Providers::WithKernel
+        );
     }
 
     #[test]
@@ -215,7 +248,10 @@ mod tests {
     fn user_mode_events_block_fallback() {
         let cfg = Config::default();
         let mut g = gate_at(&cfg, 0);
-        assert_eq!(g.on_tick(None, true, &cfg, 5000).providers, Providers::UserMode);
+        assert_eq!(
+            g.on_tick(None, true, &cfg, 5000).providers,
+            Providers::UserMode
+        );
     }
 
     #[test]
@@ -292,7 +328,10 @@ mod tests {
         let out = g.on_tick(None, true, &cfg, 600);
         assert!(out.visible);
         assert_eq!(out.timer, Timer::Game);
-        assert_eq!(g.on_tick(Some((100, 60.0, 10)), true, &cfg, 700).fps, Some(60.0));
+        assert_eq!(
+            g.on_tick(Some((100, 60.0, 10)), true, &cfg, 700).fps,
+            Some(60.0)
+        );
     }
 
     #[test]

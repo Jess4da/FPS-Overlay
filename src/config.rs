@@ -71,9 +71,16 @@ impl Default for Config {
             show_process: true,
             fahrenheit: false,
             min_fps: 20.0,
-            ignore: ["explorer.exe", "dwm.exe", "chrome.exe", "msedge.exe", "firefox.exe", "discord.exe"]
-                .map(String::from)
-                .to_vec(),
+            ignore: [
+                "explorer.exe",
+                "dwm.exe",
+                "chrome.exe",
+                "msedge.exe",
+                "firefox.exe",
+                "discord.exe",
+            ]
+            .map(String::from)
+            .to_vec(),
             toggle_key: 45,
             exit_key: 35,
         }
@@ -105,7 +112,9 @@ pub fn parse(ini: &str) -> Config {
 }
 
 fn path() -> Option<std::path::PathBuf> {
-    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("config.ini")))
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("config.ini")))
 }
 
 pub fn load() -> Config {
@@ -278,13 +287,19 @@ mod tests {
         assert!(c.fps_only_background);
         assert_eq!(parse("layout=bogus").layout, Layout::Steam);
         // A later bogus value must not reset an earlier valid one.
-        assert_eq!(parse("layout=fps-only\nlayout=bogus").layout, Layout::FpsOnly);
+        assert_eq!(
+            parse("layout=fps-only\nlayout=bogus").layout,
+            Layout::FpsOnly
+        );
     }
 
     #[test]
     fn bom_prefixed_first_key() {
         assert_eq!(parse("\u{feff}layout=fps-only").layout, Layout::FpsOnly);
-        assert_eq!(parse("\u{feff}[Overlay]\nlayout=fps-only").layout, Layout::FpsOnly);
+        assert_eq!(
+            parse("\u{feff}[Overlay]\nlayout=fps-only").layout,
+            Layout::FpsOnly
+        );
     }
 
     #[test]
@@ -304,9 +319,8 @@ mod tests {
 
     #[test]
     fn out_of_range_falls_back() {
-        let c = parse(
-            "scale=999\nbackground_opacity=-1\nmin_fps=abc\ntoggle_key=0\nposition=middle",
-        );
+        let c =
+            parse("scale=999\nbackground_opacity=-1\nmin_fps=abc\ntoggle_key=0\nposition=middle");
         let d = Config::default();
         assert_eq!(c.scale, d.scale);
         assert_eq!(c.background_opacity, d.background_opacity);
@@ -314,7 +328,10 @@ mod tests {
         assert_eq!(c.toggle_key, d.toggle_key);
         assert_eq!(c.position, d.position);
         // A later bad value must not reset an earlier valid one.
-        assert_eq!(parse("position=top-right\nposition=middle").position, Corner::TopRight);
+        assert_eq!(
+            parse("position=top-right\nposition=middle").position,
+            Corner::TopRight
+        );
         assert_eq!(parse("scale=150\nscale=999").scale, 1.5);
     }
 

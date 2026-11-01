@@ -29,9 +29,22 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let icon = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("assets/icon.ico");
     let rc_file = out.join("app.rc");
-    fs::write(&rc_file, format!("1 ICON \"{}\"\n", icon.display().to_string().replace('\\', "/"))).unwrap();
+    fs::write(
+        &rc_file,
+        format!(
+            "1 ICON \"{}\"\n",
+            icon.display().to_string().replace('\\', "/")
+        ),
+    )
+    .unwrap();
     let res = out.join("app.res");
-    let ok = Command::new(rc).arg("/nologo").arg("/fo").arg(&res).arg(&rc_file).status().is_ok_and(|s| s.success());
+    let ok = Command::new(rc)
+        .arg("/nologo")
+        .arg("/fo")
+        .arg(&res)
+        .arg(&rc_file)
+        .status()
+        .is_ok_and(|s| s.success());
     if ok {
         println!("cargo:rustc-link-arg-bins={}", res.display());
     } else {
@@ -41,7 +54,14 @@ fn main() {
 
 fn find_rc() -> Option<PathBuf> {
     let base = PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\bin");
-    let mut vers: Vec<_> = fs::read_dir(&base).ok()?.flatten().map(|e| e.path()).collect();
+    let mut vers: Vec<_> = fs::read_dir(&base)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
     vers.sort();
-    vers.into_iter().rev().map(|v| v.join(r"x64\rc.exe")).find(|p| p.exists())
+    vers.into_iter()
+        .rev()
+        .map(|v| v.join(r"x64\rc.exe"))
+        .find(|p| p.exists())
 }

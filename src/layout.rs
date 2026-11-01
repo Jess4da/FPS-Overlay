@@ -117,7 +117,11 @@ fn temp_text(c: f32, fahrenheit: bool) -> String {
 }
 
 fn usage(used: f32, total: f32) -> f32 {
-    if total > 0.0 { used / total * 100.0 } else { 0.0 }
+    if total > 0.0 {
+        used / total * 100.0
+    } else {
+        0.0
+    }
 }
 
 /// `%.0f`, or `---` when there is no reading.
@@ -198,10 +202,7 @@ pub fn build(s: &Stats, c: &Config) -> Frame {
     if c.show_ram {
         let pct = usage(s.ram_used_gb, s.ram_total_gb);
         groups.push(vec![part(
-            format!(
-                "RAM {pct:.0}% {:.1}/{:.0}G",
-                s.ram_used_gb, s.ram_total_gb
-            ),
+            format!("RAM {pct:.0}% {:.1}/{:.0}G", s.ram_used_gb, s.ram_total_gb),
             load_color(pct),
             0.0,
         )]);

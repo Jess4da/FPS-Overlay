@@ -32,13 +32,7 @@ impl FpsCounter {
     }
 
     /// Counts one present event. Returns a sample when the 1 s window closes.
-    pub fn on_present(
-        &mut self,
-        pid: u32,
-        target: u32,
-        src: Source,
-        now: i64,
-    ) -> Option<f32> {
+    pub fn on_present(&mut self, pid: u32, target: u32, src: Source, now: i64) -> Option<f32> {
         if pid != target {
             return None;
         }
@@ -126,7 +120,10 @@ mod tests {
     #[test]
     fn dxgi_120_over_1s() {
         let mut c = FpsCounter::new(1000);
-        assert!(approx(feed(&mut c, 1, 1, Source::Dxgi, 0, 1000, 120), 120.0));
+        assert!(approx(
+            feed(&mut c, 1, 1, Source::Dxgi, 0, 1000, 120),
+            120.0
+        ));
     }
 
     #[test]
@@ -134,7 +131,11 @@ mod tests {
         let mut c = FpsCounter::new(1000);
         let mut last = None;
         for i in 0..180 {
-            let src = if i % 3 == 0 { Source::D3d9 } else { Source::Dxgi };
+            let src = if i % 3 == 0 {
+                Source::D3d9
+            } else {
+                Source::Dxgi
+            };
             last = c.on_present(1, 1, src, 1000 * i / 179);
         }
         assert!(approx(last, 60.0), "got {last:?}");
@@ -149,7 +150,10 @@ mod tests {
     #[test]
     fn kernel_only_above_20_counts() {
         let mut c = FpsCounter::new(1000);
-        assert!(approx(feed(&mut c, 1, 1, Source::Kernel, 0, 1000, 30), 30.0));
+        assert!(approx(
+            feed(&mut c, 1, 1, Source::Kernel, 0, 1000, 30),
+            30.0
+        ));
     }
 
     #[test]
@@ -163,7 +167,10 @@ mod tests {
     fn target_change_discards_window() {
         let mut c = FpsCounter::new(1000);
         feed(&mut c, 1, 1, Source::Dxgi, 0, 490, 50);
-        assert!(approx(feed(&mut c, 2, 2, Source::Dxgi, 500, 1500, 30), 30.0));
+        assert!(approx(
+            feed(&mut c, 2, 2, Source::Dxgi, 500, 1500, 30),
+            30.0
+        ));
     }
 
     #[test]
@@ -172,7 +179,10 @@ mod tests {
         feed(&mut c, 1, 1, Source::Dxgi, 0, 500, 20);
         // Paused for 4.5 s: the overdue window is dropped, not reported.
         assert_eq!(c.on_present(1, 1, Source::Dxgi, 5000), None);
-        assert!(approx(feed(&mut c, 1, 1, Source::Dxgi, 5100, 6000, 60), 60.0));
+        assert!(approx(
+            feed(&mut c, 1, 1, Source::Dxgi, 5100, 6000, 60),
+            60.0
+        ));
     }
 
     #[test]

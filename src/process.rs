@@ -1,12 +1,14 @@
 //! Process image name and `Name.exe (Description)` labels.
 
 use std::ffi::c_void;
-use windows::core::{PCWSTR, PWSTR, w};
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
+use windows::core::{PCWSTR, PWSTR, w};
 
 /// Lowercased file name of `pid`.
 pub fn exe_name(pid: u32) -> Option<String> {
@@ -29,8 +31,12 @@ fn image_path(pid: u32) -> Option<String> {
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
     let mut buf = [0u16; 520];
     let mut len = buf.len() as u32;
-    let r = unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len) };
-    unsafe { let _ = CloseHandle(h); };
+    let r = unsafe {
+        QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
+    };
+    unsafe {
+        let _ = CloseHandle(h);
+    };
     r.ok()?;
     Some(String::from_utf16_lossy(&buf[..len as usize]))
 }
@@ -58,7 +64,17 @@ fn description(path: &str) -> Option<String> {
     let mut trans: *mut c_void = std::ptr::null_mut();
     let mut trans_len = 0u32;
     // SAFETY: block pointer is valid; translation block is two u16s.
-    if !unsafe { VerQueryValueW(data.as_ptr().cast(), w!("\\VarFileInfo\\Translation"), &mut trans, &mut trans_len) }.as_bool() || trans_len < 4 {
+    if !unsafe {
+        VerQueryValueW(
+            data.as_ptr().cast(),
+            w!("\\VarFileInfo\\Translation"),
+            &mut trans,
+            &mut trans_len,
+        )
+    }
+    .as_bool()
+        || trans_len < 4
+    {
         return None;
     }
     // SAFETY: `trans` points at one or more LANGID/CODEPAGE pairs; first one used.
@@ -74,8 +90,17 @@ fn description(path: &str) -> Option<String> {
     let mut ptr: *mut c_void = std::ptr::null_mut();
     let mut len = 0u32;
     // SAFETY: sub-block is NUL-terminated and queried against the same block.
-    if !unsafe { VerQueryValueW(data.as_ptr().cast(), PCWSTR(sub.as_ptr()), &mut ptr, &mut len) }.as_bool()
-        || ptr.is_null() || len == 0
+    if !unsafe {
+        VerQueryValueW(
+            data.as_ptr().cast(),
+            PCWSTR(sub.as_ptr()),
+            &mut ptr,
+            &mut len,
+        )
+    }
+    .as_bool()
+        || ptr.is_null()
+        || len == 0
     {
         return None;
     }
@@ -99,7 +124,10 @@ mod tests {
         let me = std::process::id();
         let label = label(me).expect("own process must resolve");
         let exe = exe_name(me).expect("own exe name");
-        assert!(label.to_ascii_lowercase().starts_with(&exe), "{label} vs {exe}");
+        assert!(
+            label.to_ascii_lowercase().starts_with(&exe),
+            "{label} vs {exe}"
+        );
     }
 
     #[test]

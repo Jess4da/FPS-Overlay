@@ -121,9 +121,23 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
     if f.toggle_key == f.exit_key {
         return Err("The show/hide key and the exit key must be different.".into());
     }
-    let [fps_bg, fps, cpu, gpu, gpu_clock, vram, ram, process, fahrenheit] = f.checks;
+    let [
+        fps_bg,
+        fps,
+        cpu,
+        gpu,
+        gpu_clock,
+        vram,
+        ram,
+        process,
+        fahrenheit,
+    ] = f.checks;
     Ok(Config {
-        layout: if f.layout == 1 { Layout::FpsOnly } else { Layout::Steam },
+        layout: if f.layout == 1 {
+            Layout::FpsOnly
+        } else {
+            Layout::Steam
+        },
         fps_only_background: fps_bg,
         position: match f.position {
             1 => Corner::TopRight,
@@ -202,13 +216,24 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
         let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         let ex = WS_EX_CONTROLPARENT;
         let (cw, ch) = (px(400), px(498));
-        let mut r = RECT { left: 0, top: 0, right: cw, bottom: ch };
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: cw,
+            bottom: ch,
+        };
         let _ = AdjustWindowRectExForDpi(&mut r, style, false, ex, dpi);
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
-        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let mut mi = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
         let _ = GetMonitorInfoW(mon, &mut mi);
         let wa = mi.rcWork;
-        let (x, y) = (wa.left + (wa.right - wa.left - ww) / 2, wa.top + (wa.bottom - wa.top - wh) / 2);
+        let (x, y) = (
+            wa.left + (wa.right - wa.left - ww) / 2,
+            wa.top + (wa.bottom - wa.top - wh) / 2,
+        );
 
         let Ok(hwnd) = CreateWindowExW(
             ex,
@@ -227,7 +252,10 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
             return;
         };
 
-        let mut ncm = NONCLIENTMETRICSW { cbSize: size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
+        let mut ncm = NONCLIENTMETRICSW {
+            cbSize: size_of::<NONCLIENTMETRICSW>() as u32,
+            ..Default::default()
+        };
         let _ = SystemParametersInfoForDpi(
             SPI_GETNONCLIENTMETRICS.0,
             ncm.cbSize,
@@ -239,12 +267,30 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
         build(hwnd, font, cfg, &px);
 
         for (kind, metric) in [(ICON_BIG, 32), (ICON_SMALL, 16)] {
-            if let Ok(h) = LoadImageW(Some(hinst), PCWSTR(1 as _), IMAGE_ICON, px(metric), px(metric), LR_DEFAULTCOLOR) {
-                SendMessageW(hwnd, WM_SETICON, Some(WPARAM(kind as usize)), Some(LPARAM(HICON(h.0).0 as isize)));
+            if let Ok(h) = LoadImageW(
+                Some(hinst),
+                PCWSTR(1 as _),
+                IMAGE_ICON,
+                px(metric),
+                px(metric),
+                LR_DEFAULTCOLOR,
+            ) {
+                SendMessageW(
+                    hwnd,
+                    WM_SETICON,
+                    Some(WPARAM(kind as usize)),
+                    Some(LPARAM(HICON(h.0).0 as isize)),
+                );
             }
         }
 
-        UI.with(|u| *u.borrow_mut() = Some(Ui { hwnd, font, on_save }));
+        UI.with(|u| {
+            *u.borrow_mut() = Some(Ui {
+                hwnd,
+                font,
+                on_save,
+            })
+        });
         let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
         let _ = SetForegroundWindow(hwnd);
     }
@@ -252,7 +298,15 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
 
 /// Creates and fills every control. `px` maps 96-DPI units to pixels.
 unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
-    let ctl = |class: PCWSTR, text: &str, style: u32, ex: WINDOW_EX_STYLE, x: i32, y: i32, w: i32, h: i32, id: i32| {
+    let ctl = |class: PCWSTR,
+               text: &str,
+               style: u32,
+               ex: WINDOW_EX_STYLE,
+               x: i32,
+               y: i32,
+               w: i32,
+               h: i32,
+               id: i32| {
         let text = crate::wide(text);
         // SAFETY: child of our window; text buffer outlives the call.
         unsafe {
@@ -271,40 +325,107 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
                 None,
             )
             .unwrap_or_default();
-            SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+            SendMessageW(
+                h,
+                WM_SETFONT,
+                Some(WPARAM(font.0 as usize)),
+                Some(LPARAM(1)),
+            );
             h
         }
     };
-    let label = |text: &str, x: i32, y: i32, w: i32| ctl(w!("STATIC"), text, 0, WINDOW_EX_STYLE(0), x, y + 3, w, 20, -1);
+    let label = |text: &str, x: i32, y: i32, w: i32| {
+        ctl(
+            w!("STATIC"),
+            text,
+            0,
+            WINDOW_EX_STYLE(0),
+            x,
+            y + 3,
+            w,
+            20,
+            -1,
+        )
+    };
     let edit = |text: &str, x: i32, y: i32, w: i32, id: i32, number: bool| {
         let st = WS_TABSTOP.0 | ES_AUTOHSCROLL | if number { ES_NUMBER } else { 0 };
         ctl(w!("EDIT"), text, st, WS_EX_CLIENTEDGE, x, y, w, 23, id)
     };
     let combo = |x: i32, y: i32, w: i32, id: i32, items: &[(String, usize)], sel: usize| {
-        let h = ctl(w!("COMBOBOX"), "", WS_TABSTOP.0 | WS_VSCROLL.0 | CBS_DROPDOWNLIST, WINDOW_EX_STYLE(0), x, y, w, 300, id);
+        let h = ctl(
+            w!("COMBOBOX"),
+            "",
+            WS_TABSTOP.0 | WS_VSCROLL.0 | CBS_DROPDOWNLIST,
+            WINDOW_EX_STYLE(0),
+            x,
+            y,
+            w,
+            300,
+            id,
+        );
         for (text, data) in items {
             let t = crate::wide(text);
             // SAFETY: our combo; string copied by the control.
             unsafe {
                 let i = SendMessageW(h, CB_ADDSTRING, None, Some(LPARAM(t.as_ptr() as isize)));
-                SendMessageW(h, CB_SETITEMDATA, Some(WPARAM(i.0 as usize)), Some(LPARAM(*data as isize)));
+                SendMessageW(
+                    h,
+                    CB_SETITEMDATA,
+                    Some(WPARAM(i.0 as usize)),
+                    Some(LPARAM(*data as isize)),
+                );
             }
         }
         // SAFETY: our combo.
         unsafe { SendMessageW(h, CB_SETCURSEL, Some(WPARAM(sel)), None) };
     };
     let check = |text: &str, x: i32, y: i32, w: i32, id: i32, on: bool| {
-        let h = ctl(w!("BUTTON"), text, WS_TABSTOP.0 | BS_AUTOCHECKBOX, WINDOW_EX_STYLE(0), x, y, w, 22, id);
+        let h = ctl(
+            w!("BUTTON"),
+            text,
+            WS_TABSTOP.0 | BS_AUTOCHECKBOX,
+            WINDOW_EX_STYLE(0),
+            x,
+            y,
+            w,
+            22,
+            id,
+        );
         // SAFETY: our checkbox.
         unsafe { SendMessageW(h, BM_SETCHECK, Some(WPARAM(on as usize)), None) };
     };
-    let group = |text: &str, y: i32, h: i32| ctl(w!("BUTTON"), text, BS_GROUPBOX, WINDOW_EX_STYLE(0), 10, y, 380, h, -1);
-    let list = |names: &[&str]| names.iter().enumerate().map(|(i, s)| (s.to_string(), i)).collect::<Vec<_>>();
+    let group = |text: &str, y: i32, h: i32| {
+        ctl(
+            w!("BUTTON"),
+            text,
+            BS_GROUPBOX,
+            WINDOW_EX_STYLE(0),
+            10,
+            y,
+            380,
+            h,
+            -1,
+        )
+    };
+    let list = |names: &[&str]| {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.to_string(), i))
+            .collect::<Vec<_>>()
+    };
 
     // Appearance
     group("Appearance", 8, 176);
     label("Layout", 24, 32, 150);
-    combo(180, 30, 196, ID_LAYOUT, &list(&LAYOUTS), (c.layout == Layout::FpsOnly) as usize);
+    combo(
+        180,
+        30,
+        196,
+        ID_LAYOUT,
+        &list(&LAYOUTS),
+        (c.layout == Layout::FpsOnly) as usize,
+    );
     label("Position", 24, 62, 150);
     let pos = match c.position {
         Corner::TopLeft => 0,
@@ -314,34 +435,77 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
     };
     combo(180, 60, 196, ID_POSITION, &list(&POSITIONS), pos);
     label("Scale (%)", 24, 92, 150);
-    edit(&((c.scale * 100.0).round() as u32).to_string(), 180, 90, 80, ID_SCALE, true);
+    edit(
+        &((c.scale * 100.0).round() as u32).to_string(),
+        180,
+        90,
+        80,
+        ID_SCALE,
+        true,
+    );
     label("Background opacity (%)", 24, 122, 150);
-    edit(&((c.background_opacity * 100.0).round() as u32).to_string(), 180, 120, 80, ID_OPACITY, true);
+    edit(
+        &((c.background_opacity * 100.0).round() as u32).to_string(),
+        180,
+        120,
+        80,
+        ID_OPACITY,
+        true,
+    );
     check(CHECKS[0], 24, 150, 352, ID_CHECKS, c.fps_only_background);
 
     // Steam-like bar contents
     group("Show in the Steam-like bar", 192, 104);
-    let on = [c.show_fps, c.show_cpu, c.show_gpu, c.show_gpu_clock, c.show_vram, c.show_ram, c.show_process, c.fahrenheit];
+    let on = [
+        c.show_fps,
+        c.show_cpu,
+        c.show_gpu,
+        c.show_gpu_clock,
+        c.show_vram,
+        c.show_ram,
+        c.show_process,
+        c.fahrenheit,
+    ];
     for (i, &v) in on.iter().enumerate() {
         let (col, row) = ((i % 2) as i32, (i / 2) as i32);
-        check(CHECKS[i + 1], 24 + col * 180, 212 + row * 20, 170, ID_CHECKS + 1 + i as i32, v);
+        check(
+            CHECKS[i + 1],
+            24 + col * 180,
+            212 + row * 20,
+            170,
+            ID_CHECKS + 1 + i as i32,
+            v,
+        );
     }
 
     // Game detection
     group("Game detection", 304, 92);
     label("Minimum FPS to count as a game", 24, 326, 190);
-    edit(&(c.min_fps.round() as u32).to_string(), 220, 324, 60, ID_MIN_FPS, true);
+    edit(
+        &(c.min_fps.round() as u32).to_string(),
+        220,
+        324,
+        60,
+        ID_MIN_FPS,
+        true,
+    );
     label("Never show for (exe names, comma separated)", 24, 350, 340);
     edit(&c.ignore.join(", "), 24, 368, 352, ID_IGNORE, false);
 
     // Hotkeys (in game only)
     group("Hotkeys (work only while a game is in front)", 404, 54);
     let keys = |cur: u8| {
-        let mut items: Vec<(String, usize)> = KEYS.iter().map(|(n, v)| (n.to_string(), *v as usize)).collect();
+        let mut items: Vec<(String, usize)> = KEYS
+            .iter()
+            .map(|(n, v)| (n.to_string(), *v as usize))
+            .collect();
         if !KEYS.iter().any(|(_, v)| *v == cur) {
             items.push((format!("Key code {cur}"), cur as usize));
         }
-        let sel = items.iter().position(|(_, v)| *v == cur as usize).unwrap_or(0);
+        let sel = items
+            .iter()
+            .position(|(_, v)| *v == cur as usize)
+            .unwrap_or(0);
         (items, sel)
     };
     label("Show/hide", 24, 426, 70);
@@ -351,13 +515,35 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
     let (items, sel) = keys(c.exit_key);
     combo(256, 424, 120, ID_EXIT, &items, sel);
 
-    ctl(w!("BUTTON"), "Save", WS_TABSTOP.0 | BS_DEFPUSHBUTTON, WINDOW_EX_STYLE(0), 214, 466, 84, 26, IDOK);
-    ctl(w!("BUTTON"), "Cancel", WS_TABSTOP.0, WINDOW_EX_STYLE(0), 306, 466, 84, 26, IDCANCEL);
+    ctl(
+        w!("BUTTON"),
+        "Save",
+        WS_TABSTOP.0 | BS_DEFPUSHBUTTON,
+        WINDOW_EX_STYLE(0),
+        214,
+        466,
+        84,
+        26,
+        IDOK,
+    );
+    ctl(
+        w!("BUTTON"),
+        "Cancel",
+        WS_TABSTOP.0,
+        WINDOW_EX_STYLE(0),
+        306,
+        466,
+        84,
+        26,
+        IDCANCEL,
+    );
 }
 
 unsafe fn item(hwnd: HWND, id: i32) -> HWND {
     // SAFETY: child lookup on our window.
-    unsafe { windows::Win32::UI::WindowsAndMessaging::GetDlgItem(Some(hwnd), id).unwrap_or_default() }
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetDlgItem(Some(hwnd), id).unwrap_or_default()
+    }
 }
 
 unsafe fn text(hwnd: HWND, id: i32) -> String {
@@ -378,7 +564,9 @@ unsafe fn combo_value(hwnd: HWND, id: i32) -> usize {
         if i < 0 {
             return 0;
         }
-        SendMessageW(h, CB_GETITEMDATA, Some(WPARAM(i as usize)), None).0.max(0) as usize
+        SendMessageW(h, CB_GETITEMDATA, Some(WPARAM(i as usize)), None)
+            .0
+            .max(0) as usize
     }
 }
 
@@ -417,7 +605,11 @@ unsafe fn save(hwnd: HWND) {
         Err(msg) => return message(hwnd, &msg, MB_ICONWARNING),
     };
     if let Err(e) = config::save(&cfg) {
-        return message(hwnd, &format!("Could not write config.ini:\n{e}"), MB_ICONERROR);
+        return message(
+            hwnd,
+            &format!("Could not write config.ini:\n{e}"),
+            MB_ICONERROR,
+        );
     }
     // Copy the callback out: the borrow must be released before it runs and
     // before DestroyWindow re-enters WM_DESTROY.
@@ -435,7 +627,12 @@ fn message(hwnd: HWND, text: &str, icon: MESSAGEBOX_STYLE) {
     let t = crate::wide(text);
     // SAFETY: NUL-terminated buffers that outlive the modal call.
     unsafe {
-        MessageBoxW(Some(hwnd), PCWSTR(t.as_ptr()), w!("FPS Overlay"), MB_OK | icon);
+        MessageBoxW(
+            Some(hwnd),
+            PCWSTR(t.as_ptr()),
+            w!("FPS Overlay"),
+            MB_OK | icon,
+        );
     }
 }
 

@@ -13,17 +13,19 @@ mod settings;
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
+use std::sync::atomic::{
+    AtomicBool, AtomicU32, AtomicUsize,
+    Ordering::{Acquire, Relaxed, Release},
+};
 
-use windows::core::{BOOL, PCWSTR, w};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
 use windows::Win32::Security::{TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, OpenProcessToken,
-    SetPriorityClass, SetProcessWorkingSetSize,
+    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, OpenProcessToken, SetPriorityClass,
+    SetProcessWorkingSetSize,
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows::Win32::UI::HiDpi::{
@@ -33,7 +35,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFY_ICON_MESSAGE, NOTIFYICONDATAW,
-    ShellExecuteW, Shell_NotifyIconW,
+    Shell_NotifyIconW, ShellExecuteW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CS_DBLCLKS, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW,
@@ -43,10 +45,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LoadImageW, MB_ICONERROR, MB_OK, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
     SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetMenuDefaultItem, SetTimer, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONDBLCLK,
-    WM_QUERYENDSESSION, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WINDOW_EX_STYLE, WS_OVERLAPPED,
+    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
 };
+use windows::core::{BOOL, PCWSTR, w};
 
 const WM_TRAY: u32 = WM_APP + 1;
 const ID_EXIT: usize = 1;
@@ -61,7 +64,14 @@ fn tray_icon() -> HICON {
     unsafe {
         let module = GetModuleHandleW(None).unwrap_or_default();
         let (w, h) = (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
-        match LoadImageW(Some(module.into()), PCWSTR(1 as _), IMAGE_ICON, w, h, LR_DEFAULTCOLOR) {
+        match LoadImageW(
+            Some(module.into()),
+            PCWSTR(1 as _),
+            IMAGE_ICON,
+            w,
+            h,
+            LR_DEFAULTCOLOR,
+        ) {
             Ok(h) => HICON(h.0),
             Err(_) => LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         }
@@ -97,7 +107,15 @@ fn tray_menu(hwnd: HWND) {
         let _ = GetCursorPos(&mut pt);
         // Required so the menu closes when the user clicks elsewhere.
         let _ = SetForegroundWindow(hwnd);
-        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            None,
+            hwnd,
+            None,
+        );
         let _ = DestroyMenu(menu);
         match cmd.0 as usize {
             ID_EXIT => {
@@ -185,12 +203,18 @@ impl App {
         let pid = (pid != 0 && pid != std::process::id()).then_some(pid);
         self.fg_pid = pid.unwrap_or(0);
         self.fg_hwnd = hwnd;
-        let out = self.gate.on_foreground(pid, exe.as_deref(), &self.cfg, self.now());
+        let out = self
+            .gate
+            .on_foreground(pid, exe.as_deref(), &self.cfg, self.now());
         self.apply(out);
     }
 
     fn apply(&mut self, out: GateOut) {
-        let target = if out.providers == Providers::Off { 0 } else { self.fg_pid };
+        let target = if out.providers == Providers::Off {
+            0
+        } else {
+            self.fg_pid
+        };
         if target != self.target {
             self.target = target;
             SHARED.target_pid.store(target, Release);
@@ -330,7 +354,11 @@ impl App {
             mon != self.anchor_mon || dpi != self.anchor_dpi,
             self.frame.as_ref() != Some(&frame),
         );
-        let r = if want { self.overlay.draw(&frame, anchor) } else { Ok(()) };
+        let r = if want {
+            self.overlay.draw(&frame, anchor)
+        } else {
+            Ok(())
+        };
         if want && r.is_ok() {
             self.frame = Some(frame);
             self.anchor_mon = mon;
@@ -422,7 +450,12 @@ fn show_error(text: &str) {
     let title = wide("FPS Overlay");
     // SAFETY: both buffers are NUL-terminated and outlive the call.
     unsafe {
-        MessageBoxW(None, PCWSTR(text.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONERROR);
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
     }
 }
 
@@ -450,7 +483,9 @@ fn elevated() -> bool {
 
 /// Relaunch self elevated. Declined UAC (or any failure) is silent, per spec.
 fn relaunch_elevated() {
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     let file = wide(&exe.to_string_lossy());
     let dir = exe.parent().map(|d| wide(&d.to_string_lossy()));
     // SAFETY: buffers are NUL-terminated and outlive the call.
@@ -488,7 +523,10 @@ fn main() {
     let overlay = match render::Overlay::new(&cfg) {
         Ok(o) => o,
         Err(e) => {
-            show_error(&format!("Overlay window failed: 0x{:08X}", e.code().0 as u32));
+            show_error(&format!(
+                "Overlay window failed: 0x{:08X}",
+                e.code().0 as u32
+            ));
             return;
         }
     };
@@ -676,7 +714,12 @@ unsafe extern "system" fn ctrl_handler(_ctrl_type: u32) -> BOOL {
     unsafe {
         let hwnd = MAIN_HWND.load(Relaxed);
         if hwnd != 0 {
-            let _ = PostMessageW(Some(HWND(hwnd as *mut c_void)), WM_CLOSE, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(
+                Some(HWND(hwnd as *mut c_void)),
+                WM_CLOSE,
+                WPARAM(0),
+                LPARAM(0),
+            );
         }
     }
     BOOL(1)
