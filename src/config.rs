@@ -175,10 +175,8 @@ fn set(c: &mut Config, key: &str, val: &str) {
 }
 
 fn flag(dst: &mut bool, v: &str) {
-    if let Ok(n) = v.parse::<u32>() {
-        if n <= 1 {
-            *dst = n == 1;
-        }
+    if let Ok(n @ 0..=1) = v.parse::<u32>() {
+        *dst = n == 1;
     }
 }
 

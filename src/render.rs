@@ -27,7 +27,6 @@ use crate::layout::{Frame, Rgb};
 
 const CLASS: PCWSTR = w!("FpsOverlay");
 
-const WHITE: u32 = 0x00FF_FFFF;
 const WHITE_RGB: Rgb = Rgb(255, 255, 255);
 const SHADOW_RGB: Rgb = Rgb(0, 0, 0);
 
@@ -405,6 +404,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WHITE: u32 = 0x00FF_FFFF;
 
     #[test]
     fn transparent_bg_no_text() {

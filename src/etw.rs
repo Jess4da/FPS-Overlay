@@ -136,6 +136,9 @@ fn stop_session() {
 
 impl Etw {
     /// Opens the realtime session. All providers start disabled.
+    // The logfile struct is filled field by field because its union members
+    // cannot be used in a struct literal on stable Rust.
+    #[allow(clippy::field_reassign_with_default)]
     pub fn start(shared: &'static Shared) -> windows::core::Result<Etw> {
         let mut freq = 0i64;
         // SAFETY: out-param only.
