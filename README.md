@@ -27,8 +27,12 @@ the key.
 | Show/hide the overlay | `Insert` (45) |
 | Exit | `End` (35) |
 
-A tray icon ("FPS Overlay") is always present: click or right-click it →
-**Exit FPS Overlay** to quit from anywhere.
+A tray icon ("FPS Overlay") is always present:
+
+- **Double-click** it to open **Settings**: every `config.ini` option in one
+  window. **Save** validates, writes `config.ini` and applies immediately (no
+  restart); **Cancel** discards.
+- **Right-click** it for **Settings…** and **Exit FPS Overlay**.
 
 ## Layouts
 

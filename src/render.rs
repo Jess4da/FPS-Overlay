@@ -177,6 +177,11 @@ impl Overlay {
         }
     }
 
+    /// New scale/opacity/position; the caller forces a redraw.
+    pub fn set_config(&mut self, cfg: &Config) {
+        self.cfg = cfg.clone();
+    }
+
     pub fn draw(&mut self, frame: &Frame, anchor: HWND) -> Result<()> {
         let dpi = dpi(anchor);
         let (w, h) = self.bake(frame, dpi)?;

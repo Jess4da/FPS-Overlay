@@ -104,11 +104,12 @@ pub fn parse(ini: &str) -> Config {
     c
 }
 
+fn path() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("config.ini")))
+}
+
 pub fn load() -> Config {
-    let Some(path) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("config.ini")))
-    else {
+    let Some(path) = path() else {
         return Config::default();
     };
     match std::fs::read(&path) {
@@ -120,6 +121,47 @@ pub fn load() -> Config {
         // Any other error (permissions, sharing, I/O): never overwrite the user's file.
         Err(_) => Config::default(),
     }
+}
+
+/// Writes the whole `[Overlay]` section (comments in a hand-edited file are not kept).
+pub fn save(c: &Config) -> std::io::Result<()> {
+    let path = path().ok_or_else(|| std::io::Error::other("no exe directory"))?;
+    std::fs::write(path, to_ini(c))
+}
+
+pub fn to_ini(c: &Config) -> String {
+    let b = |v: bool| if v { 1 } else { 0 };
+    let layout = match c.layout {
+        Layout::Steam => "steam",
+        Layout::FpsOnly => "fps-only",
+    };
+    let position = match c.position {
+        Corner::TopLeft => "top-left",
+        Corner::TopRight => "top-right",
+        Corner::BottomLeft => "bottom-left",
+        Corner::BottomRight => "bottom-right",
+    };
+    format!(
+        "[Overlay]\nlayout={layout}\nfps_only_background={}\nposition={position}\nscale={}\n\
+         background_opacity={}\nshow_fps={}\nshow_cpu={}\nshow_gpu={}\nshow_gpu_clock={}\n\
+         show_vram={}\nshow_ram={}\nshow_process={}\nfahrenheit={}\nmin_fps={}\nignore={}\n\
+         toggle_key={}\nexit_key={}\n",
+        b(c.fps_only_background),
+        (c.scale * 100.0).round() as u32,
+        (c.background_opacity * 100.0).round() as u32,
+        b(c.show_fps),
+        b(c.show_cpu),
+        b(c.show_gpu),
+        b(c.show_gpu_clock),
+        b(c.show_vram),
+        b(c.show_ram),
+        b(c.show_process),
+        b(c.fahrenheit),
+        c.min_fps,
+        c.ignore.join(","),
+        c.toggle_key,
+        c.exit_key,
+    )
 }
 
 fn set(c: &mut Config, key: &str, val: &str) {
@@ -160,18 +202,19 @@ fn set(c: &mut Config, key: &str, val: &str) {
             Ok(n) if (1.0..=1000.0).contains(&n) => c.min_fps = n,
             _ => {}
         },
-        "ignore" => {
-            c.ignore = v
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect()
-        }
+        "ignore" => c.ignore = ignore_list(&v),
         "toggle_key" => key_code(&v, &mut c.toggle_key),
         "exit_key" => key_code(&v, &mut c.exit_key),
         _ => {}
     }
+}
+
+/// Comma list of exe names, lowercased and trimmed.
+pub fn ignore_list(v: &str) -> Vec<String> {
+    v.split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn flag(dst: &mut bool, v: &str) {
@@ -194,6 +237,27 @@ fn key_code(v: &str, dst: &mut u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn to_ini_roundtrips_non_defaults() {
+        let c = Config {
+            layout: Layout::FpsOnly,
+            fps_only_background: true,
+            position: Corner::BottomRight,
+            scale: 1.5,
+            background_opacity: 0.4,
+            show_cpu: false,
+            show_process: false,
+            fahrenheit: true,
+            min_fps: 30.0,
+            ignore: vec!["foo.exe".into(), "bar.exe".into()],
+            toggle_key: 112,
+            exit_key: 113,
+            ..Config::default()
+        };
+        assert_eq!(parse(&to_ini(&c)), c);
+        assert_eq!(parse(&to_ini(&Config::default())), Config::default());
+    }
 
     #[test]
     fn empty_is_default() {

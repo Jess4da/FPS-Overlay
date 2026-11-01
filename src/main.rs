@@ -8,6 +8,7 @@ mod layout;
 mod metrics;
 mod process;
 mod render;
+mod settings;
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -35,20 +36,21 @@ use windows::Win32::UI::Shell::{
     ShellExecuteW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetCursorPos, GetForegroundWindow,
-    GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON, IDI_APPLICATION, IMAGE_ICON,
-    KillTimer, LR_DEFAULTCOLOR, LoadIconW, LoadImageW, MB_ICONERROR,
-    MB_OK, MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL,
-    SetForegroundWindow, SetTimer,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONUP, WM_QUERYENDSESSION,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WINDOW_EX_STYLE, WS_OVERLAPPED,
+    AppendMenuW, CS_DBLCLKS, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyMenu, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetCursorPos,
+    GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON,
+    IDI_APPLICATION, IMAGE_ICON, IsDialogMessageW, KillTimer, LR_DEFAULTCOLOR, LoadIconW,
+    LoadImageW, MB_ICONERROR, MB_OK, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
+    SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetMenuDefaultItem, SetTimer, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONDBLCLK,
+    WM_QUERYENDSESSION, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WINDOW_EX_STYLE, WS_OVERLAPPED,
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
 const ID_EXIT: usize = 1;
+const ID_SETTINGS: usize = 2;
 /// Explorer broadcasts this after it restarts; the tray icon must be re-added.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -87,6 +89,9 @@ fn tray_menu(hwnd: HWND) {
     // SAFETY: menu is created, shown modally and destroyed in this scope.
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
+        let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Settings…"));
+        let _ = SetMenuDefaultItem(menu, ID_SETTINGS as u32, 0);
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Exit FPS Overlay"));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -94,9 +99,22 @@ fn tray_menu(hwnd: HWND) {
         let _ = SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None);
         let _ = DestroyMenu(menu);
-        if cmd.0 as usize == ID_EXIT {
-            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        match cmd.0 as usize {
+            ID_EXIT => {
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+            ID_SETTINGS => open_settings(),
+            _ => {}
         }
+    }
+}
+
+fn open_settings() {
+    // Clone out first: the window's callbacks re-enter APP, so no borrow may be held.
+    let mut cfg = None;
+    with_app(|app| cfg = Some(app.cfg.clone()));
+    if let Some(cfg) = cfg {
+        settings::open(&cfg, |new| with_app(|app| app.reconfigure(new)));
     }
 }
 
@@ -230,6 +248,24 @@ impl App {
         self.label = (0, None);
         self.last_poll = 0;
         self.keys_armed = false;
+    }
+
+    /// Settings saved: apply without restart. Hide, drop cached frame, and re-run
+    /// the gate for the current foreground so ignore list / min FPS / layout take
+    /// effect immediately.
+    fn reconfigure(&mut self, cfg: Config) {
+        self.overlay.set_config(&cfg);
+        self.cfg = cfg;
+        self.hide();
+        self.anchor_mon = HMONITOR::default();
+        self.stats = Stats::default();
+        self.label = (0, None);
+        self.last_poll = 0;
+        self.keys_armed = false;
+        self.gate = GameGate::new();
+        let fg = self.fg_hwnd;
+        self.fg_hwnd = HWND::default();
+        self.foreground(fg);
     }
 
     fn tick(&mut self) {
@@ -520,6 +556,12 @@ fn main() {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            // Tab / Enter / Esc navigation inside the settings window.
+            if let Some(dlg) = settings::hwnd()
+                && IsDialogMessageW(dlg, &msg).as_bool()
+            {
+                continue;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -543,6 +585,7 @@ fn main_window() -> Option<HWND> {
         if !REGISTERED.swap(true, Relaxed) {
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(main_wndproc),
+                style: CS_DBLCLKS,
                 lpszClassName: CLASS,
                 ..Default::default()
             };
@@ -579,8 +622,10 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
         }
         WM_QUERYENDSESSION => LRESULT(1),
         WM_TRAY => {
-            if matches!(lp.0 as u32, WM_RBUTTONUP | WM_LBUTTONUP) {
-                tray_menu(hwnd);
+            match lp.0 as u32 {
+                WM_LBUTTONDBLCLK => open_settings(),
+                WM_RBUTTONUP => tray_menu(hwnd),
+                _ => {}
             }
             LRESULT(0)
         }
