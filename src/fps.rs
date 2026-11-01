@@ -43,12 +43,7 @@ impl FpsCounter {
             return None;
         }
         if target != self.target {
-            self.target = target;
-            self.start = now;
-            self.d3d9 = 0;
-            self.dxgi = 0;
-            self.kernel = 0;
-            self.saw_user_mode = false;
+            self.reset(target, now);
         }
         match src {
             Source::D3d9 => {
@@ -66,6 +61,7 @@ impl FpsCounter {
             return None;
         }
         let secs = ticks as f32 / self.freq as f32;
+        let stale = ticks > 2 * self.freq;
         // ponytail: DxgKrnl is kernel-mode so it cannot be PID-filtered at source;
         // the >= 20 floor is what keeps desktop apps out.
         let frames = if self.d3d9 > 0 {
@@ -81,7 +77,18 @@ impl FpsCounter {
         self.dxgi = 0;
         self.kernel = 0;
         self.start = now;
-        (frames > 0).then(|| frames as f32 / secs)
+        // A game that was paused/stalled would otherwise report a bogus low rate.
+        (!stale && frames > 0).then(|| frames as f32 / secs)
+    }
+
+    /// Discards any partial window and re-anchors on `target` at `now`.
+    pub fn reset(&mut self, target: u32, now: i64) {
+        self.target = target;
+        self.start = now;
+        self.d3d9 = 0;
+        self.dxgi = 0;
+        self.kernel = 0;
+        self.saw_user_mode = false;
     }
 
     /// Any D3d9/Dxgi event for the current target since the last reset.
@@ -157,6 +164,27 @@ mod tests {
         let mut c = FpsCounter::new(1000);
         feed(&mut c, 1, 1, Source::Dxgi, 0, 490, 50);
         assert!(approx(feed(&mut c, 2, 2, Source::Dxgi, 500, 1500, 30), 30.0));
+    }
+
+    #[test]
+    fn idle_gap_discards_window() {
+        let mut c = FpsCounter::new(1000);
+        feed(&mut c, 1, 1, Source::Dxgi, 0, 500, 20);
+        // Paused for 4.5 s: the overdue window is dropped, not reported.
+        assert_eq!(c.on_present(1, 1, Source::Dxgi, 5000), None);
+        assert!(approx(feed(&mut c, 1, 1, Source::Dxgi, 5100, 6000, 60), 60.0));
+    }
+
+    #[test]
+    fn reset_drops_old_window() {
+        let mut c = FpsCounter::new(1000);
+        feed(&mut c, 1, 1, Source::Dxgi, 0, 900, 10);
+        c.reset(2, 950); // target B, no B events
+        assert_eq!(c.on_present(1, 1, Source::Dxgi, 1200), None); // pid 1 is not B
+        c.reset(1, 1300); // back to A
+        // A's old events must not close the new window.
+        assert_eq!(c.on_present(1, 1, Source::Dxgi, 1400), None);
+        assert!(approx(c.on_present(1, 1, Source::Dxgi, 2300), 2.0));
     }
 
     #[test]

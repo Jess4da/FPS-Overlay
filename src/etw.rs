@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed, Ordering::Release};
 use std::thread::JoinHandle;
 
 use windows::core::{GUID, PCWSTR, PWSTR};
@@ -80,6 +80,8 @@ pub struct Etw {
 struct Consumer {
     shared: &'static Shared,
     counter: FpsCounter,
+    /// Last `target_pid` the counter window belongs to.
+    last_target: u32,
 }
 
 /// `EVENT_TRACE_PROPERTIES` followed by its inline logger-name buffer.
@@ -155,13 +157,14 @@ impl Etw {
             return Err(rc.into());
         }
 
-        let mut consumer = Box::new(Consumer {
+        let consumer = Box::into_raw(Box::new(Consumer {
             shared,
             counter: FpsCounter::new(freq),
-        });
+            last_target: shared.target_pid.load(Relaxed),
+        }));
         let mut logfile = EVENT_TRACE_LOGFILEW::default();
         logfile.LoggerName = PWSTR(props.name.as_mut_ptr());
-        logfile.Context = &mut *consumer as *mut Consumer as *mut c_void;
+        logfile.Context = consumer as *mut c_void;
         // Edition 2024: assigning Copy fields of a union is safe.
         logfile.Anonymous1.ProcessTraceMode =
             PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
@@ -170,16 +173,19 @@ impl Etw {
         let log = unsafe { OpenTraceW(&mut logfile) };
         if log.Value == 0 || log.Value == u64::MAX {
             stop_session();
+            // SAFETY: pointer came from Box::into_raw above and was never handed to ETW.
+            drop(unsafe { Box::from_raw(consumer) });
             return Err(WIN32_ERROR(6).into()); // ERROR_INVALID_HANDLE
         }
 
+        let consumer_addr = consumer as usize; // raw pointers are not Send
         let thread = std::thread::spawn(move || {
-            // Keep the consumer (callback UserContext) alive for the whole trace.
-            let _consumer = consumer;
             // SAFETY: one realtime handle; returns when the session is stopped/closed.
             unsafe {
                 let _ = ProcessTrace(&[log], None, None);
             }
+            // SAFETY: the trace is finished, so no callback can reach the consumer again.
+            drop(unsafe { Box::from_raw(consumer_addr as *mut Consumer) });
         });
 
         Ok(Etw {
@@ -284,7 +290,11 @@ impl Etw {
 
 impl Drop for Etw {
     fn drop(&mut self) {
-        stop_session();
+        // SAFETY: stopping by our own handle cannot hit an unrelated session.
+        unsafe {
+            let mut p = SessionProps::new();
+            let _ = ControlTraceW(self.session, None, &mut p.props, EVENT_TRACE_CONTROL_STOP);
+        }
         // SAFETY: closes the processing handle we opened.
         unsafe {
             let _ = windows::Win32::System::Diagnostics::Etw::CloseTrace(self.log);
@@ -313,15 +323,24 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
         _ => return,
     };
     let target = consumer.shared.target_pid.load(Relaxed);
-    // NOTE: whoever changes `target_pid` must also clear `saw_user_mode`;
-    // no event flows for a brand-new target until it presents.
+    if target != consumer.last_target {
+        // A brand-new target has no history: drop the old window and its evidence,
+        // even if no event ever shows up for it (Vulkan/OpenGL).
+        consumer.last_target = target;
+        consumer.counter.reset(target, header.TimeStamp);
+        consumer.shared.saw_user_mode.store(false, Relaxed);
+    }
+    if header.ProcessId != target {
+        return;
+    }
     if let Some(fps) = consumer
         .counter
         .on_present(header.ProcessId, target, src, header.TimeStamp)
     {
         consumer.shared.fps_bits.store(fps.to_bits(), Relaxed);
         consumer.shared.sample_pid.store(target, Relaxed);
-        consumer.shared.sample_qpc.store(header.TimeStamp, Relaxed);
+        // Release last: readers load sample_qpc with Acquire, then the fields above.
+        consumer.shared.sample_qpc.store(header.TimeStamp, Release);
     }
     consumer
         .shared
