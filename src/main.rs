@@ -160,6 +160,13 @@ impl App {
     fn tick(&mut self) {
         let qpc = self.qpc();
         let now = ms_between(self.freq, qpc, self.t0);
+        // Self-heal: a missed or coalesced WinEvent would otherwise leave the gate
+        // watching a process that is no longer (or no longer only) foreground.
+        // SAFETY: read-only query.
+        let fg = unsafe { GetForegroundWindow() };
+        if fg != self.fg_hwnd {
+            self.foreground(fg);
+        }
         // Load the timestamp first: it is the commit flag for the other fields.
         let at = SHARED.sample_qpc.load(Acquire);
         let sample = (at != 0).then(|| {
@@ -206,9 +213,13 @@ impl App {
 
         let anchor = self.fg_hwnd;
         let frame = layout::build(&self.stats, &self.cfg);
-        if (!self.shown || self.anchor != anchor || self.frame.as_ref() != Some(&frame))
-            && self.overlay.draw(&frame, anchor).is_ok()
-        {
+        let want = needs_draw(
+            self.shown,
+            self.anchor != anchor,
+            self.frame.as_ref() != Some(&frame),
+        );
+        let r = if want { self.overlay.draw(&frame, anchor) } else { Ok(()) };
+        if want && r.is_ok() {
             self.frame = Some(frame);
             self.anchor = anchor;
             self.shown = true;
@@ -226,8 +237,7 @@ impl App {
             self.keys_armed = true;
             return false;
         }
-        let toggle = cur.0 && !self.keys.0;
-        let exit = cur.1 && !self.keys.1;
+        let (toggle, exit) = edges(self.keys, cur);
         self.keys = cur;
         if toggle {
             let out = self.gate.toggle();
@@ -247,6 +257,18 @@ fn interval(timer: Timer) -> u32 {
         Timer::Probe => 250,
         Timer::Game => 100,
     }
+}
+
+/// A visible overlay must be pushed when it is not on screen yet (even if the
+/// content is unchanged — a hidden window needs the show), when the placement
+/// anchor moved, or when the content changed.
+fn needs_draw(shown: bool, anchor_moved: bool, content_changed: bool) -> bool {
+    !shown || anchor_moved || content_changed
+}
+
+/// Up→down edges for `(toggle, exit)`: a key held across ticks fires once.
+fn edges(prev: (bool, bool), cur: (bool, bool)) -> (bool, bool) {
+    (cur.0 && !prev.0, cur.1 && !prev.1)
 }
 
 /// Milliseconds from `then` to `now` on a QPC clock of `freq` ticks/s.
@@ -499,6 +521,26 @@ mod tests {
         assert_eq!(interval(Timer::Probe), 250);
         assert_eq!(interval(Timer::Game), 100);
         assert_eq!(interval(Timer::Off), 0);
+    }
+
+    #[test]
+    fn hidden_overlay_always_redraws() {
+        // Regression: hidden → visible must push even when the frame is unchanged.
+        assert!(needs_draw(false, false, false));
+        assert!(needs_draw(false, false, true));
+        assert!(!needs_draw(true, false, false));
+        assert!(needs_draw(true, true, false));
+        assert!(needs_draw(true, false, true));
+    }
+
+    #[test]
+    fn held_key_fires_once() {
+        assert_eq!(edges((false, false), (true, false)), (true, false));
+        assert_eq!(edges((true, false), (true, false)), (false, false));
+        assert_eq!(edges((true, false), (false, false)), (false, false));
+        assert_eq!(edges((false, true), (false, true)), (false, false));
+        // Arming with the key already down suppresses the edge.
+        assert_eq!(edges((true, true), (true, true)), (false, false));
     }
 
     #[test]
