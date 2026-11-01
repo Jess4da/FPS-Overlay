@@ -55,7 +55,10 @@ cargo test                                     # all unit tests (66)
 cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process)
 cargo test poll_smoke -- --nocapture           # real PDH/DXGI/NVML poll, prints Sample + timing (~1.1 s)
 cargo clippy --release --all-targets -- -D warnings
-cargo fmt
+cargo fmt                                      # CI runs `cargo fmt --check`; format before committing
+
+# Release: bump `version` in Cargo.toml, commit, then push a matching semver tag
+git tag v0.2.0; git push origin v0.2.0
 ```
 
 - **Running the exe** triggers UAC; it relaunches itself elevated via `runas`. Declining exits silently.
@@ -114,6 +117,8 @@ cargo fmt
 | `src/settings.rs` | Settings window (tray double-click): validates with `from_fields`, saves, applies live |
 | `build.rs` | `/DELAYLOAD` for pdh/dxgi/version, the Common Controls v6 manifest, and the icon via SDK `rc.exe` (if `rc.exe` isn't found, the build still succeeds with the stock icon) |
 | `.cargo/config.toml` | `+crt-static` for `x86_64-pc-windows-msvc` only. Linker args belong in `build.rs` (`rustc-link-arg-bins`) so they don't apply to the build script |
+| `.github/workflows/ci.yml` | Push to `main` / PR: `fmt --check`, clippy `-D warnings`, tests, release build, exe uploaded as an artifact (windows-latest) |
+| `.github/workflows/release.yml` | Tag `vX.Y.Z[-pre]`: checks the tag is semver and equals `Cargo.toml` `version`, builds, publishes a GitHub Release with the exe + `.sha256` (`-pre` tags become pre-releases) |
 
 ## Runtime/Tooling Preferences
 
@@ -141,5 +146,4 @@ cargo fmt
 - **Docs to keep in sync:**
   - Any change to behaviour or config: update `README.md` (config table, hotkeys, layouts, footprint numbers).
   - Binding-rule changes: update `docs/specs/…-design.md`.
-  - Known drift to fix when you touch the README: it says keys are "read once at startup", but Settings now applies changes live, and its recorded exe size is stale.
   - Known drift in the spec: tray, Settings window and the 10 s backoff are listed as non-goals or missing, but are implemented.

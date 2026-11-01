@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check tag is semver and matches Cargo.toml
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $semver = '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$'
+          if ($tag -notmatch $semver) { throw "Tag '$tag' is not semver (vMAJOR.MINOR.PATCH[-pre])" }
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ("v$ver" -ne $tag) { throw "Tag $tag does not match Cargo.toml version $ver" }
+
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "fps-overlay-${{ github.ref_name }}-x86_64-windows.exe"
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/fps-overlay.exe "dist/$name"
+          $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -Encoding ascii "dist/$name.sha256"
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $pre = if ($tag -match '-') { '--prerelease' } else { $null }
+          gh release create $tag dist/* --title $tag --generate-notes --verify-tag $pre

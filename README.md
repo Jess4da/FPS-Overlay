@@ -14,8 +14,8 @@ window and gets its FPS from ETW present events — no injection, no hooks.
 - Stock `nvml.dll` (NVIDIA driver) is used, when present, for GPU temperature and
   clock. Everything else is native Windows APIs.
 
-Run `fps-overlay.exe`. A `config.ini` is written next to the exe on first start;
-edit it and restart the app. Keys are read once at startup.
+Run `fps-overlay.exe`. A `config.ini` is written next to the exe on first start.
+Change settings from the tray (applied immediately), or edit the file and restart.
 
 ## Hotkeys
 
@@ -73,10 +73,25 @@ cargo build --release
 Single static-CRT exe, one dependency (`windows`). `pdh.dll`, `dxgi.dll` and
 `version.dll` are delay-loaded, so the FPS-only layout never maps them.
 
+## CI and releases
+
+- `.github/workflows/ci.yml`: every push to `main` and every PR runs
+  `cargo fmt --check`, clippy `-D warnings`, tests and a release build; the exe
+  is uploaded as a workflow artifact.
+- `.github/workflows/release.yml`: pushing a semver tag `vMAJOR.MINOR.PATCH`
+  (optionally `-pre`, published as a pre-release) builds and publishes a GitHub
+  release with the exe and its SHA-256. The tag must match `version` in
+  `Cargo.toml`.
+
+```
+# bump version in Cargo.toml first, commit, then:
+git tag v0.2.0 && git push origin v0.2.0
+```
+
 ## Footprint
 
 Release build measured on this machine:
 
-- `fps-overlay.exe`: 324,096 bytes (316.5 KiB), no DLLs to ship.
+- `fps-overlay.exe`: ~347 KB, no DLLs to ship.
 - Import table: system DLLs only (`kernel32`, `user32`, `gdi32`, `shell32`,
   `advapi32`, `oleaut32`, `ntdll`).
