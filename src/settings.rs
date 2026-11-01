@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, GetMonitorInfoW, HBRUSH, HFONT, HGDIOBJ,
     MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
@@ -16,15 +17,18 @@ use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, GetDpiForMonitor, MDT_EFFECTIVE_DPI, SystemParametersInfoForDpi,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowTextLengthW,
-    GetWindowTextW, HICON, HMENU, ICON_BIG, ICON_SMALL, IDC_ARROW, IMAGE_ICON, LR_DEFAULTCOLOR,
-    LoadCursorW, LoadImageW, MB_ICONERROR, MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MessageBoxW,
-    NONCLIENTMETRICSW, RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_SHOWNORMAL, SendMessageW,
-    SetForegroundWindow, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_SETFONT, WM_SETICON, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
-    WS_EX_CONTROLPARENT, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
+    EnumWindows, GWL_EXSTYLE, GetCursorPos, GetWindowLongW, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, GetWindowThreadProcessId, HICON, HMENU, ICON_BIG, ICON_SMALL, IDC_ARROW,
+    IMAGE_ICON, IsWindowVisible, LR_DEFAULTCOLOR, LoadCursorW, LoadImageW, MB_ICONERROR,
+    MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MF_STRING, MessageBoxW, NONCLIENTMETRICSW,
+    RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_SHOWNORMAL, SendMessageW, SetForegroundWindow,
+    SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTALIGN, TrackPopupMenu, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_SETFONT, WM_SETICON, WNDCLASSW, WS_CAPTION,
+    WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_TOOLWINDOW, WS_MINIMIZEBOX, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
-use windows::core::{PCWSTR, w};
+use windows::core::{BOOL, PCWSTR, w};
 
 use crate::config::{self, Config, Corner, Layout};
 
@@ -53,12 +57,16 @@ const ID_MIN_FPS: i32 = 104;
 const ID_IGNORE: i32 = 105;
 const ID_TOGGLE: i32 = 106;
 const ID_EXIT: i32 = 107;
+/// Not in `CHECKS`: state lives in Task Scheduler, not `Config`.
+const ID_AUTOSTART: i32 = 108;
+const ID_ADD_IGNORE: i32 = 109;
 /// Checkboxes, in `Fields::checks` order.
 const ID_CHECKS: i32 = 110;
-const CHECKS: [&str; 9] = [
+const CHECKS: [&str; 10] = [
     "Background in FPS-only layout",
     "FPS",
     "CPU usage",
+    "CPU clock",
     "GPU usage / temp",
     "GPU clock",
     "VRAM",
@@ -100,8 +108,8 @@ pub struct Fields<'a> {
     pub opacity: &'a str,
     pub min_fps: &'a str,
     pub ignore: &'a str,
-    /// fps_only_background, fps, cpu, gpu, gpu_clock, vram, ram, process, fahrenheit
-    pub checks: [bool; 9],
+    /// fps_only_background, fps, cpu, cpu_clock, gpu, gpu_clock, vram, ram, process, fahrenheit
+    pub checks: [bool; 10],
     pub toggle_key: u8,
     pub exit_key: u8,
 }
@@ -125,6 +133,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         fps_bg,
         fps,
         cpu,
+        cpu_clock,
         gpu,
         gpu_clock,
         vram,
@@ -149,6 +158,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         background_opacity: opacity as f32 / 100.0,
         show_fps: fps,
         show_cpu: cpu,
+        show_cpu_clock: cpu_clock,
         show_gpu: gpu,
         show_gpu_clock: gpu_clock,
         show_vram: vram,
@@ -215,7 +225,7 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
 
         let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         let ex = WS_EX_CONTROLPARENT;
-        let (cw, ch) = (px(400), px(498));
+        let (cw, ch) = (px(400), px(518));
         let mut r = RECT {
             left: 0,
             top: 0,
@@ -455,10 +465,11 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
     check(CHECKS[0], 24, 150, 352, ID_CHECKS, c.fps_only_background);
 
     // Steam-like bar contents
-    group("Show in the Steam-like bar", 192, 104);
+    group("Show in the Steam-like bar", 192, 124);
     let on = [
         c.show_fps,
         c.show_cpu,
+        c.show_cpu_clock,
         c.show_gpu,
         c.show_gpu_clock,
         c.show_vram,
@@ -479,21 +490,32 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
     }
 
     // Game detection
-    group("Game detection", 304, 92);
-    label("Minimum FPS to count as a game", 24, 326, 190);
+    group("Game detection", 324, 92);
+    label("Minimum FPS to count as a game", 24, 346, 190);
     edit(
         &(c.min_fps.round() as u32).to_string(),
         220,
-        324,
+        344,
         60,
         ID_MIN_FPS,
         true,
     );
-    label("Never show for (exe names, comma separated)", 24, 350, 340);
-    edit(&c.ignore.join(", "), 24, 368, 352, ID_IGNORE, false);
+    label("Never show for (exe names, comma separated)", 24, 370, 340);
+    edit(&c.ignore.join(", "), 24, 388, 268, ID_IGNORE, false);
+    ctl(
+        w!("BUTTON"),
+        "Add…",
+        WS_TABSTOP.0,
+        WINDOW_EX_STYLE(0),
+        298,
+        387,
+        78,
+        25,
+        ID_ADD_IGNORE,
+    );
 
     // Hotkeys (in game only)
-    group("Hotkeys (work only while a game is in front)", 404, 54);
+    group("Hotkeys (work only while a game is in front)", 424, 54);
     let keys = |cur: u8| {
         let mut items: Vec<(String, usize)> = KEYS
             .iter()
@@ -508,20 +530,28 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
             .unwrap_or(0);
         (items, sel)
     };
-    label("Show/hide", 24, 426, 70);
+    label("Show/hide", 24, 446, 70);
     let (items, sel) = keys(c.toggle_key);
-    combo(96, 424, 100, ID_TOGGLE, &items, sel);
-    label("Exit", 214, 426, 40);
+    combo(96, 444, 100, ID_TOGGLE, &items, sel);
+    label("Exit", 214, 446, 40);
     let (items, sel) = keys(c.exit_key);
-    combo(256, 424, 120, ID_EXIT, &items, sel);
+    combo(256, 444, 120, ID_EXIT, &items, sel);
 
+    check(
+        "Start with Windows",
+        14,
+        488,
+        190,
+        ID_AUTOSTART,
+        crate::autostart::enabled(),
+    );
     ctl(
         w!("BUTTON"),
         "Save",
         WS_TABSTOP.0 | BS_DEFPUSHBUTTON,
         WINDOW_EX_STYLE(0),
         214,
-        466,
+        486,
         84,
         26,
         IDOK,
@@ -532,7 +562,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         WS_TABSTOP.0,
         WINDOW_EX_STYLE(0),
         306,
-        466,
+        486,
         84,
         26,
         IDCANCEL,
@@ -573,7 +603,7 @@ unsafe fn combo_value(hwnd: HWND, id: i32) -> usize {
 unsafe fn save(hwnd: HWND) {
     // SAFETY: reads our own controls.
     let (scale, opacity, min_fps, ignore, checks, layout, position, toggle, exit) = unsafe {
-        let mut checks = [false; 9];
+        let mut checks = [false; 10];
         for (i, c) in checks.iter_mut().enumerate() {
             *c = SendMessageW(item(hwnd, ID_CHECKS + i as i32), BM_GETCHECK, None, None).0 == 1;
         }
@@ -611,6 +641,17 @@ unsafe fn save(hwnd: HWND) {
             MB_ICONERROR,
         );
     }
+    // SAFETY: our checkbox.
+    let auto = unsafe { SendMessageW(item(hwnd, ID_AUTOSTART), BM_GETCHECK, None, None).0 == 1 };
+    if auto != crate::autostart::enabled()
+        && let Err(e) = crate::autostart::set(auto)
+    {
+        return message(
+            hwnd,
+            &format!("Could not change Start with Windows:\n{e}"),
+            MB_ICONERROR,
+        );
+    }
     // Copy the callback out: the borrow must be released before it runs and
     // before DestroyWindow re-enters WM_DESTROY.
     let on_save = UI.with(|u| u.borrow().as_ref().map(|u| u.on_save));
@@ -636,6 +677,103 @@ fn message(hwnd: HWND, text: &str, icon: MESSAGEBOX_STYLE) {
     }
 }
 
+/// Running windowed apps not yet ignored, as `(exe, label)`, sorted by label, one
+/// per exe. Input is one `(exe, label)` per top-level window.
+fn candidates(windows: Vec<(String, String)>, ignored: &[String]) -> Vec<(String, String)> {
+    let mut v: Vec<_> = windows
+        .into_iter()
+        .filter(|(e, _)| !ignored.contains(e))
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v.dedup_by(|a, b| a.0 == b.0);
+    v.sort_by_key(|(_, l)| l.to_ascii_lowercase());
+    v
+}
+
+unsafe extern "system" fn collect(hwnd: HWND, lp: LPARAM) -> BOOL {
+    // SAFETY: lp is the &mut Vec passed by pick_ignore, alive for EnumWindows.
+    let out = unsafe { &mut *(lp.0 as *mut Vec<(String, String)>) };
+    // SAFETY: plain queries on a window handle supplied by EnumWindows.
+    unsafe {
+        let tool = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0;
+        // Cloaked = hidden by DWM (suspended UWP hosts, other virtual desktops).
+        let mut cloaked = 0u32;
+        let _ = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut _ as *mut _,
+            size_of::<u32>() as u32,
+        );
+        if !IsWindowVisible(hwnd).as_bool()
+            || tool
+            || cloaked != 0
+            || GetWindowTextLengthW(hwnd) == 0
+        {
+            return true.into();
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != 0
+            && pid != std::process::id()
+            && let Some(exe) = crate::process::exe_name(pid)
+        {
+            let label = crate::process::label(pid).unwrap_or_else(|| exe.clone());
+            out.push((exe, label));
+        }
+    }
+    true.into()
+}
+
+/// "Add…": popup menu of running windowed apps; the pick is appended to the
+/// ignore box (applied on Save like any other edit).
+unsafe fn pick_ignore(hwnd: HWND) {
+    let mut found: Vec<(String, String)> = Vec::new();
+    // SAFETY: callback only runs during this call, while `found` is alive.
+    let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut found as *mut _ as isize)) };
+    // SAFETY: reads our own edit box.
+    let current = unsafe { text(hwnd, ID_IGNORE) };
+    let mut list = config::ignore_list(&current);
+    let items = candidates(found, &list);
+    if items.is_empty() {
+        return message(
+            hwnd,
+            "No other apps with a window are running.",
+            MB_ICONWARNING,
+        );
+    }
+    // SAFETY: menu created, shown modally and destroyed in this scope; labels
+    // outlive TrackPopupMenu.
+    let cmd = unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        let labels: Vec<Vec<u16>> = items.iter().map(|(_, l)| crate::wide(l)).collect();
+        for (i, l) in labels.iter().enumerate() {
+            let _ = AppendMenuW(menu, MF_STRING, i + 1, PCWSTR(l.as_ptr()));
+        }
+        let mut r = RECT::default();
+        let _ = GetWindowRect(item(hwnd, ID_ADD_IGNORE), &mut r);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTALIGN,
+            r.right,
+            r.bottom,
+            None,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        cmd.0 as usize
+    };
+    let Some((exe, _)) = cmd.checked_sub(1).and_then(|i| items.get(i)) else {
+        return;
+    };
+    config::add_ignore(&mut list, exe);
+    let t = crate::wide(&list.join(", "));
+    // SAFETY: our edit box; buffer outlives the call.
+    unsafe {
+        let _ = SetWindowTextW(item(hwnd, ID_IGNORE), PCWSTR(t.as_ptr()));
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_COMMAND => {
@@ -645,6 +783,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 IDCANCEL => unsafe {
                     let _ = DestroyWindow(hwnd);
                 },
+                ID_ADD_IGNORE => unsafe { pick_ignore(hwnd) },
                 _ => {}
             }
             LRESULT(0)
@@ -687,7 +826,9 @@ mod tests {
             opacity: "40",
             min_fps: "30",
             ignore: " Foo.EXE ,, bar.exe",
-            checks: [true, true, false, true, false, true, false, true, true],
+            checks: [
+                true, true, false, true, true, false, true, false, true, true,
+            ],
             toggle_key: toggle,
             exit_key: exit,
         }
@@ -700,7 +841,8 @@ mod tests {
         assert_eq!(c.position, Corner::BottomRight);
         assert_eq!((c.scale, c.background_opacity, c.min_fps), (1.5, 0.4, 30.0));
         assert_eq!(c.ignore, ["foo.exe", "bar.exe"]);
-        assert!(c.fps_only_background && c.show_fps && !c.show_cpu && c.show_gpu);
+        assert!(c.fps_only_background && c.show_fps && !c.show_cpu && c.show_cpu_clock);
+        assert!(c.show_gpu);
         assert!(!c.show_gpu_clock && c.show_vram && !c.show_ram && c.show_process && c.fahrenheit);
         assert_eq!((c.toggle_key, c.exit_key), (0x70, 0x7B));
         // Saved form must survive the ini round trip unchanged.
@@ -715,6 +857,27 @@ mod tests {
         }
         assert!(from_fields(&fields("50", 0x70, 0x7B)).is_ok());
         assert!(from_fields(&fields("200", 0x70, 0x7B)).is_ok());
+    }
+
+    #[test]
+    fn candidates_drop_ignored_and_duplicate_exes_sorted_by_label() {
+        let s = |e: &str, l: &str| (e.to_string(), l.to_string());
+        let got = candidates(
+            vec![
+                s("game.exe", "Game.exe (Zeta)"),
+                s("chrome.exe", "chrome.exe"),
+                s("app.exe", "App.exe (alpha)"),
+                s("game.exe", "Game.exe (Zeta)"),
+            ],
+            &["chrome.exe".to_string()],
+        );
+        assert_eq!(
+            got,
+            [
+                s("app.exe", "App.exe (alpha)"),
+                s("game.exe", "Game.exe (Zeta)")
+            ]
+        );
     }
 
     #[test]

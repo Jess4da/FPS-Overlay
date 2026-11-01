@@ -5,7 +5,7 @@ New Rust app (free redesign; the C++ code is a reference, not a structure to cop
 
 Reference look (`screenshots/steamlike_layout.png`):
 ```
-FPS 180 | CPU 15% | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G
+FPS 180 | CPU 15% | 5545 MHz | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G
 RocketLeague.exe (Rocket League)
 ```
 
@@ -58,6 +58,7 @@ Vertical/horizontal layouts, settings UI, tray icon, i18n/RTL, update check, spa
 | VRAM used | PDH `\GPU Adapter Memory(*)\Dedicated Usage` instance matching the chosen adapter's LUID (bytes) |
 | VRAM total | Chosen adapter = DXGI `IDXGIFactory1::EnumAdapters1` entry with largest `DedicatedVideoMemory`, skipping `DXGI_ADAPTER_FLAG_SOFTWARE`; total = its `DedicatedVideoMemory`. All GPU fields describe this one adapter. |
 | GPU temp / core MHz | Only when chosen adapter `VendorId == 0x10DE`: NVML via `LoadLibraryW("nvml.dll")` + `GetProcAddress` (`nvmlInit_v2`, `nvmlDeviceGetHandleByIndex_v2(0)`, `nvmlDeviceGetTemperature` sensor 0, `nvmlDeviceGetClockInfo` clock 0 = graphics). Otherwise / on failure → `None`, fields omitted. *(Builder's call: NVML index 0 assumed to be the chosen adapter; multi-NVIDIA rigs may mismatch.)* |
+| CPU MHz | PDH `\Processor Information(_Total)\Processor Frequency` × `% Processor Performance` / 100 (live boost clock, as Task Manager), own query opened on first poll. Failure → `None`, group omitted. |
 | Process label | `QueryFullProcessImageNameW` + `GetFileVersionInfoW`/`VerQueryValueW` `FileDescription` → `"name.exe (Description)"`, or `"name.exe"` when no description |
 
 ## Game gate *(builder's call — resolves FPS dropouts and exit-key reachability)*
@@ -89,14 +90,15 @@ Polled with `GetAsyncKeyState` on the in-game 100 ms timer (edge-triggered: act 
   - FPS value: ≥60 (0.18,0.94,0.45); ≥30 (1,0.85,0.15); else (1,0.25,0.25).
   - load (CPU%, GPU%, whole VRAM/RAM text): >90 (1,0.3,0.3); >70 (1,0.85,0.15); else (0.70,0.70,0.75).
   - temp (°C): >85 (1,0.3,0.3); >70 (1,0.85,0.15); else (0.70,0.70,0.75). Thresholds always in °C even when displayed in °F.
-  - MHz value (0.70,0.70,0.75). Process line (0.42,0.52,0.42) at 0.78 × font size.
+  - MHz values (CPU and GPU) (0.70,0.70,0.75). Process line (0.42,0.52,0.42) at 0.78 × font size.
 - Groups in order, each enabled by config, separated by `" | "` only between drawn groups:
   1. `FPS` `180` (`%.0f`; `---` when `None`)
   2. `CPU` `15%`
-  3. `GPU` `25%` ` 54°C` (temp omitted when `None`; `N/A` when GPU% `None`)
-  4. `2505 MHz` (own group, only when Some)
-  5. `VRAM 25% 2.0/8G` (`VRAM %.0f%% %.1f/%.0fG`; omitted when either value `None`)
-  6. `RAM 80% 12.8/16G` (`RAM %.0f%% %.1f/%.0fG`)
+  3. `5545 MHz` CPU clock (own group, only when Some)
+  4. `GPU` `25%` ` 54°C` (temp omitted when `None`; `N/A` when GPU% `None`)
+  5. `2505 MHz` GPU clock (own group, only when Some)
+  6. `VRAM 25% 2.0/8G` (`VRAM %.0f%% %.1f/%.0fG`; omitted when either value `None`)
+  7. `RAM 80% 12.8/16G` (`RAM %.0f%% %.1f/%.0fG`)
 - Fahrenheit: `°F`, value `c*9/5+32`.
 
 ## config.ini (`[Overlay]`, read once at start, parsed by hand from the file bytes)
@@ -107,7 +109,7 @@ Polled with `GetAsyncKeyState` on the in-game 100 ms timer (edge-triggered: act 
 | position | top-left | top-left, top-right, bottom-left, bottom-right |
 | scale | 100 | 50–200 (%) |
 | background_opacity | 100 | 0–100 |
-| show_fps, show_cpu, show_gpu, show_gpu_clock, show_vram, show_ram, show_process | 1 | 0/1 |
+| show_fps, show_cpu, show_cpu_clock, show_gpu, show_gpu_clock, show_vram, show_ram, show_process | 1 | 0/1 |
 | fahrenheit | 0 | 0/1 |
 | min_fps | 20 | 1–1000 |
 | ignore | explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe | comma list |

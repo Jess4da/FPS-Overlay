@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+mod autostart;
 mod config;
 mod etw;
 mod fps;
@@ -42,18 +43,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyMenu, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetCursorPos,
     GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON,
     IDI_APPLICATION, IMAGE_ICON, IsDialogMessageW, KillTimer, LR_DEFAULTCOLOR, LoadIconW,
-    LoadImageW, MB_ICONERROR, MB_OK, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
-    SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetMenuDefaultItem, SetTimer, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+    LoadImageW, MB_ICONERROR, MB_OK, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW,
+    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetMenuDefaultItem, SetTimer,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION,
+    WM_LBUTTONDBLCLK, WM_QUERYENDSESSION, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
 const WM_TRAY: u32 = WM_APP + 1;
 const ID_EXIT: usize = 1;
 const ID_SETTINGS: usize = 2;
+const ID_AUTOSTART: usize = 3;
+const ID_IGNORE: usize = 4;
 /// Explorer broadcasts this after it restarts; the tray icon must be re-added.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -101,6 +104,24 @@ fn tray_menu(hwnd: HWND) {
         let Ok(menu) = CreatePopupMenu() else { return };
         let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Settings…"));
         let _ = SetMenuDefaultItem(menu, ID_SETTINGS as u32, 0);
+        let mut game = None;
+        with_app(|app| {
+            game = app
+                .last_game
+                .clone()
+                .filter(|g| !app.cfg.ignore.contains(g))
+        });
+        let item = game.as_ref().map(|g| wide(&format!("Don't show for {g}")));
+        if let Some(t) = &item {
+            let _ = AppendMenuW(menu, MF_STRING, ID_IGNORE, PCWSTR(t.as_ptr()));
+        }
+        let auto = autostart::enabled();
+        let flags = if auto {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let _ = AppendMenuW(menu, flags, ID_AUTOSTART, w!("Start with Windows"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Exit FPS Overlay"));
         let mut pt = POINT::default();
@@ -122,9 +143,51 @@ fn tray_menu(hwnd: HWND) {
                 let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             }
             ID_SETTINGS => open_settings(),
+            ID_IGNORE => {
+                if let Some(g) = game {
+                    ignore_exe(hwnd, &g);
+                }
+            }
+            ID_AUTOSTART => {
+                if let Err(e) = autostart::set(!auto) {
+                    let t = wide(&format!("Could not change Start with Windows:\n{e}"));
+                    MessageBoxW(
+                        Some(hwnd),
+                        PCWSTR(t.as_ptr()),
+                        w!("FPS Overlay"),
+                        MB_OK | MB_ICONERROR,
+                    );
+                }
+            }
             _ => {}
         }
     }
+}
+
+/// Tray "Don't show for X": append to `ignore`, save, apply live.
+/// ponytail: an already-open Settings window keeps its old ignore text; saving it
+/// drops the new entry. Refresh its edit box here if that bites.
+fn ignore_exe(hwnd: HWND, exe: &str) {
+    let mut cfg = None;
+    with_app(|app| cfg = Some(app.cfg.clone()));
+    let Some(mut cfg) = cfg else { return };
+    if !config::add_ignore(&mut cfg.ignore, exe) {
+        return;
+    }
+    if let Err(e) = config::save(&cfg) {
+        let t = wide(&format!("Could not write config.ini:\n{e}"));
+        // SAFETY: NUL-terminated buffer outlives the modal call; no APP borrow held.
+        unsafe {
+            MessageBoxW(
+                Some(hwnd),
+                PCWSTR(t.as_ptr()),
+                w!("FPS Overlay"),
+                MB_OK | MB_ICONERROR,
+            )
+        };
+        return;
+    }
+    with_app(|app| app.reconfigure(cfg));
 }
 
 fn open_settings() {
@@ -170,6 +233,8 @@ struct App {
     stats: Stats,
     frame: Option<layout::Frame>,
     label: (u32, Option<String>),
+    /// Exe of the last process the overlay showed for, offered in the tray menu.
+    last_game: Option<String>,
     last_poll: u64,
     keys: (bool, bool),
     keys_armed: bool,
@@ -247,6 +312,9 @@ impl App {
             }
         }
 
+        if out.visible && !self.visible {
+            self.last_game = process::exe_name(self.fg_pid);
+        }
         self.visible = out.visible;
         if !out.visible {
             self.hide();
@@ -335,6 +403,7 @@ impl App {
             self.stats.gpu = s.gpu;
             self.stats.gpu_temp_c = s.gpu_temp_c;
             self.stats.gpu_mhz = s.gpu_mhz;
+            self.stats.cpu_mhz = s.cpu_mhz;
             self.stats.vram_used_gb = s.vram_used_gb;
             self.stats.vram_total_gb = s.vram_total_gb;
             self.stats.ram_used_gb = s.ram_used_gb;
@@ -570,6 +639,7 @@ fn main() {
         stats: Stats::default(),
         frame: None,
         label: (0, None),
+        last_game: None,
         last_poll: 0,
         keys: (false, false),
         keys_armed: false,

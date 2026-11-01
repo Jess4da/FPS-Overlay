@@ -35,6 +35,7 @@ pub struct Frame {
 pub struct Stats {
     pub fps: Option<f32>,
     pub cpu: Option<f32>,
+    pub cpu_mhz: Option<f32>,
     pub gpu: Option<f32>,
     pub gpu_temp_c: Option<f32>,
     pub gpu_mhz: Option<f32>,
@@ -166,6 +167,16 @@ pub fn build(s: &Stats, c: &Config) -> Frame {
         groups.push(vec![label("CPU", rgb(0.94, 0.88, 0.58)), value]);
     }
 
+    if c.show_cpu_clock
+        && let Some(mhz) = s.cpu_mhz
+    {
+        groups.push(vec![part(
+            format!("{mhz:.0} MHz"),
+            rgb(0.70, 0.70, 0.75),
+            0.0,
+        )]);
+    }
+
     if c.show_gpu {
         let value = match s.gpu {
             Some(p) => part(format!("{p:.0}%"), load_color(p), LABEL_GAP),
@@ -250,6 +261,7 @@ mod tests {
         Stats {
             fps: Some(180.0),
             cpu: Some(15.0),
+            cpu_mhz: Some(4400.0),
             gpu: Some(25.0),
             gpu_temp_c: Some(54.0),
             gpu_mhz: Some(2505.0),
@@ -269,6 +281,7 @@ mod tests {
     fn fps_only_groups() -> Config {
         Config {
             show_cpu: false,
+            show_cpu_clock: false,
             show_gpu: false,
             show_gpu_clock: false,
             show_vram: false,
@@ -285,7 +298,7 @@ mod tests {
         // Run texts carry their own spaces; gaps are pixels, not characters.
         assert_eq!(
             text(&f.lines[0]),
-            "FPS180 | CPU15% | GPU25%54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G"
+            "FPS180 | CPU15% | 4400 MHz | GPU25%54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G"
         );
         assert_eq!(f.lines[0].size, 1.0);
         assert_eq!(f.lines[1].size, 0.78);
@@ -395,6 +408,7 @@ mod tests {
         let s = Stats {
             fps: Some(180.0),
             cpu: Some(15.0),
+            cpu_mhz: None,
             gpu: None,
             gpu_temp_c: None,
             gpu_mhz: None,
@@ -418,6 +432,7 @@ mod tests {
         let c = Config {
             show_fps: false,
             show_cpu: false,
+            show_cpu_clock: false,
             show_gpu: false,
             show_gpu_clock: false,
             show_vram: false,

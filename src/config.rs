@@ -21,6 +21,7 @@ pub struct Config {
     pub background_opacity: f32,
     pub show_fps: bool,
     pub show_cpu: bool,
+    pub show_cpu_clock: bool,
     pub show_gpu: bool,
     pub show_gpu_clock: bool,
     pub show_vram: bool,
@@ -42,6 +43,7 @@ scale=100
 background_opacity=100
 show_fps=1
 show_cpu=1
+show_cpu_clock=1
 show_gpu=1
 show_gpu_clock=1
 show_vram=1
@@ -64,6 +66,7 @@ impl Default for Config {
             background_opacity: 1.0,
             show_fps: true,
             show_cpu: true,
+            show_cpu_clock: true,
             show_gpu: true,
             show_gpu_clock: true,
             show_vram: true,
@@ -152,7 +155,7 @@ pub fn to_ini(c: &Config) -> String {
     };
     format!(
         "[Overlay]\nlayout={layout}\nfps_only_background={}\nposition={position}\nscale={}\n\
-         background_opacity={}\nshow_fps={}\nshow_cpu={}\nshow_gpu={}\nshow_gpu_clock={}\n\
+         background_opacity={}\nshow_fps={}\nshow_cpu={}\nshow_cpu_clock={}\nshow_gpu={}\nshow_gpu_clock={}\n\
          show_vram={}\nshow_ram={}\nshow_process={}\nfahrenheit={}\nmin_fps={}\nignore={}\n\
          toggle_key={}\nexit_key={}\n",
         b(c.fps_only_background),
@@ -160,6 +163,7 @@ pub fn to_ini(c: &Config) -> String {
         (c.background_opacity * 100.0).round() as u32,
         b(c.show_fps),
         b(c.show_cpu),
+        b(c.show_cpu_clock),
         b(c.show_gpu),
         b(c.show_gpu_clock),
         b(c.show_vram),
@@ -201,6 +205,7 @@ fn set(c: &mut Config, key: &str, val: &str) {
         }
         "show_fps" => flag(&mut c.show_fps, &v),
         "show_cpu" => flag(&mut c.show_cpu, &v),
+        "show_cpu_clock" => flag(&mut c.show_cpu_clock, &v),
         "show_gpu" => flag(&mut c.show_gpu, &v),
         "show_gpu_clock" => flag(&mut c.show_gpu_clock, &v),
         "show_vram" => flag(&mut c.show_vram, &v),
@@ -224,6 +229,16 @@ pub fn ignore_list(v: &str) -> Vec<String> {
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// Adds `exe` (lowercased) unless already listed. False if it was already there.
+pub fn add_ignore(list: &mut Vec<String>, exe: &str) -> bool {
+    let exe = exe.trim().to_ascii_lowercase();
+    if exe.is_empty() || list.contains(&exe) {
+        return false;
+    }
+    list.push(exe);
+    true
 }
 
 fn flag(dst: &mut bool, v: &str) {
@@ -256,6 +271,7 @@ mod tests {
             scale: 1.5,
             background_opacity: 0.4,
             show_cpu: false,
+            show_cpu_clock: false,
             show_process: false,
             fahrenheit: true,
             min_fps: 30.0,
@@ -338,6 +354,15 @@ mod tests {
     #[test]
     fn other_section_ignored() {
         assert_eq!(parse("[Other]\nscale=150").scale, 1.0);
+    }
+
+    #[test]
+    fn add_ignore_lowercases_and_skips_duplicates() {
+        let mut l = vec!["foo.exe".to_string()];
+        assert!(!add_ignore(&mut l, "FOO.exe"));
+        assert!(add_ignore(&mut l, " Game.EXE "));
+        assert!(!add_ignore(&mut l, ""));
+        assert_eq!(l, ["foo.exe", "game.exe"]);
     }
 
     #[test]

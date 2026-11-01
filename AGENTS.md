@@ -51,7 +51,7 @@ Tray WM_TRAY: double-click → settings::open → Save → config::save + App::r
 
 ```powershell
 cargo build --release                          # target\release\fps-overlay.exe
-cargo test                                     # all unit tests (66)
+cargo test                                     # all unit tests (70)
 cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process)
 cargo test poll_smoke -- --nocapture           # real PDH/DXGI/NVML poll, prints Sample + timing (~1.1 s)
 cargo clippy --release --all-targets -- -D warnings
@@ -63,7 +63,7 @@ git tag v0.2.0; git push origin v0.2.0
 
 - **Running the exe** triggers UAC; it relaunches itself elevated via `runas`. Declining exits silently.
 - **Stuck ETW session after a crash:** `logman query -ets | findstr FPSOverlay`, then `logman stop FPSOverlayRs_ETW -ets` (both elevated). The app also clears a stale session on start.
-- **Checking size and imports:** `dumpbin /dependents target\release\fps-overlay.exe` should list system DLLs only, with `pdh.dll`, `dxgi.dll` and `version.dll` under *delay load*.
+- **Checking size and imports:** `dumpbin /dependents target\release\fps-overlay.exe` should list system DLLs only, with `pdh.dll`, `dxgi.dll`, `version.dll` and `dwmapi.dll` under *delay load*.
 
 ## Code Conventions & Common Patterns
 
@@ -115,7 +115,7 @@ git tag v0.2.0; git push origin v0.2.0
 | `src/process.rs` | pid → lowercase exe name, `"Name.exe (FileDescription)"` label |
 | `src/config.rs` | `Config`, `DEFAULT_INI`, hand-written `parse`/`to_ini`/`load`/`save`. Bad values fall back per key |
 | `src/settings.rs` | Settings window (tray double-click): validates with `from_fields`, saves, applies live |
-| `build.rs` | `/DELAYLOAD` for pdh/dxgi/version, the Common Controls v6 manifest, and the icon via SDK `rc.exe` (if `rc.exe` isn't found, the build still succeeds with the stock icon) |
+| `build.rs` | `/DELAYLOAD` for pdh/dxgi/version/dwmapi, the Common Controls v6 manifest, and the icon via SDK `rc.exe` (if `rc.exe` isn't found, the build still succeeds with the stock icon) |
 | `.cargo/config.toml` | `+crt-static` for `x86_64-pc-windows-msvc` only. Linker args belong in `build.rs` (`rustc-link-arg-bins`) so they don't apply to the build script |
 | `.github/workflows/ci.yml` | Push to `main` / PR: `fmt --check`, clippy `-D warnings`, tests, release build, exe uploaded as an artifact (windows-latest) |
 | `.github/workflows/release.yml` | Tag `vX.Y.Z[-pre]`: checks the tag is semver and equals `Cargo.toml` `version`, builds, publishes a GitHub Release with the exe + `.sha256` (`-pre` tags become pre-releases) |

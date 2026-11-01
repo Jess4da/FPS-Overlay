@@ -1,4 +1,4 @@
-//! Native metrics: CPU, RAM, GPU/VRAM via PDH, GPU temp/clock via NVML.
+//! Native metrics: CPU, RAM, CPU clock + GPU/VRAM via PDH, GPU temp/clock via NVML.
 //! Everything is lazy: `new()` only zeroes fields; the first `poll()` picks the
 //! DXGI adapter, opens PDH, and (only for NVIDIA) loads nvml.dll.
 
@@ -11,9 +11,9 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Performance::{
-    PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA,
-    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
-    PdhOpenQueryW,
+    PDH_FMT_COUNTERVALUE, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
+    PDH_MORE_DATA, PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData,
+    PdhGetFormattedCounterArrayW, PdhGetFormattedCounterValue, PdhOpenQueryW,
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::GetSystemTimes;
@@ -22,6 +22,7 @@ use windows::core::{PCSTR, PCWSTR};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sample {
     pub cpu: Option<f32>,
+    pub cpu_mhz: Option<f32>,
     pub gpu: Option<f32>,
     pub gpu_temp_c: Option<f32>,
     pub gpu_mhz: Option<f32>,
@@ -36,6 +37,7 @@ pub struct Metrics {
     prev: Option<(u64, u64, u64)>,
     adapter: Option<Adapter>,
     pdh: Option<PdhState>,
+    cpu_clock: Option<CpuClock>,
     nvml: Option<Nvml>,
 }
 
@@ -97,6 +99,74 @@ impl Drop for PdhState {
     }
 }
 
+/// Live CPU clock: base `Processor Frequency` scaled by `% Processor Performance`
+/// (turbo/throttle ratio), as Task Manager shows. Own query so it works when the
+/// GPU counters don't.
+struct CpuClock {
+    query: PDH_HQUERY,
+    base: PDH_HCOUNTER,
+    perf: PDH_HCOUNTER,
+}
+
+impl CpuClock {
+    fn new() -> Option<Self> {
+        let mut query = PDH_HQUERY::default();
+        let mut base = PDH_HCOUNTER::default();
+        let mut perf = PDH_HCOUNTER::default();
+        // SAFETY: out-params only; the query is closed on failure or in Drop.
+        unsafe {
+            if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != ERROR_SUCCESS.0 {
+                return None;
+            }
+            let ok = PdhAddEnglishCounterW(
+                query,
+                windows::core::w!("\\Processor Information(_Total)\\Processor Frequency"),
+                0,
+                &mut base,
+            ) == ERROR_SUCCESS.0
+                && PdhAddEnglishCounterW(
+                    query,
+                    windows::core::w!("\\Processor Information(_Total)\\% Processor Performance"),
+                    0,
+                    &mut perf,
+                ) == ERROR_SUCCESS.0;
+            if !ok {
+                PdhCloseQuery(query);
+                return None;
+            }
+            // % Processor Performance is a rate: needs this first sample.
+            let _ = PdhCollectQueryData(query);
+        }
+        Some(Self { query, base, perf })
+    }
+
+    fn read(&self) -> Option<f32> {
+        let get = |c: PDH_HCOUNTER| {
+            let mut v = PDH_FMT_COUNTERVALUE::default();
+            // SAFETY: our counter; out-param only.
+            let r = unsafe { PdhGetFormattedCounterValue(c, PDH_FMT_DOUBLE, None, &mut v) };
+            // SAFETY: PDH_FMT_DOUBLE selects the double member.
+            (r == ERROR_SUCCESS.0 && v.CStatus == 0).then_some(unsafe { v.Anonymous.doubleValue })
+        };
+        // SAFETY: our query.
+        let _ = unsafe { PdhCollectQueryData(self.query) };
+        cpu_mhz(get(self.base)?, get(self.perf)?)
+    }
+}
+
+impl Drop for CpuClock {
+    fn drop(&mut self) {
+        // SAFETY: query opened in new(), closed once.
+        unsafe { PdhCloseQuery(self.query) };
+    }
+}
+
+/// Base MHz × performance % / 100; `None` for missing/zero readings.
+pub fn cpu_mhz(base: f64, perf_pct: f64) -> Option<f32> {
+    let mhz = base * perf_pct / 100.0;
+    (mhz >= 1.0).then_some(mhz.round() as f32)
+}
+
 type NvmlFn = unsafe extern "system" fn(*mut c_void, i32, *mut u32) -> i32;
 
 struct Nvml {
@@ -152,6 +222,7 @@ impl Metrics {
             prev: None,
             adapter: None,
             pdh: None,
+            cpu_clock: None,
             nvml: None,
         }
     }
@@ -159,6 +230,7 @@ impl Metrics {
     pub fn poll(&mut self) -> Sample {
         if !self.started {
             self.started = true;
+            self.cpu_clock = CpuClock::new();
             if let Some(a) = pick_adapter() {
                 self.pdh = PdhState::new(&a.tag);
                 if a.nvidia {
@@ -180,7 +252,7 @@ impl Metrics {
             }
             self.prev = Some(now);
         }
-
+        s.cpu_mhz = self.cpu_clock.as_ref().and_then(CpuClock::read);
         if let Some((used, total)) = ram() {
             s.ram_used_gb = used;
             s.ram_total_gb = total;
@@ -376,6 +448,13 @@ mod tests {
     fn cpu_percent_math() {
         assert!((cpu_percent(25, 80, 20) - 75.0).abs() < 1e-4);
         assert_eq!(cpu_percent(0, 0, 0), 0.0);
+    }
+
+    #[test]
+    fn cpu_mhz_scales_base_by_performance_percent() {
+        assert_eq!(cpu_mhz(3600.0, 122.2), Some(4399.0));
+        assert_eq!(cpu_mhz(3600.0, 50.0), Some(1800.0));
+        assert_eq!(cpu_mhz(0.0, 120.0), None);
     }
 
     #[test]

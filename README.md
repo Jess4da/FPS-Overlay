@@ -32,11 +32,18 @@ A tray icon ("FPS Overlay") is always present:
 - **Double-click** it to open **Settings**: every `config.ini` option in one
   window. **Save** validates, writes `config.ini` and applies immediately (no
   restart); **Cancel** discards.
-- **Right-click** it for **Settings…** and **Exit FPS Overlay**.
+- **Right-click** it for **Settings…**, **Start with Windows** (checkmark toggle;
+  also a checkbox in Settings) and **Exit FPS Overlay**. Start with Windows
+  creates a Task Scheduler logon task named `FPS Overlay` that runs the exe at
+  highest privileges, so there's no UAC prompt at login. Untick it to delete the
+  task. If you move the exe, untick and tick again.
+- **Ignoring an app** the overlay shouldn't show for: after it appears, right-click
+  the tray → **Don't show for `name.exe`** (saved and applied at once). Or in
+  Settings, **Add…** next to the ignore list picks from running apps with a window.
 
 ## Layouts
 
-- `layout=steam` (default): one line `FPS 180 | CPU 15% | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G`
+- `layout=steam` (default): one line `FPS 180 | CPU 15% | 5545 MHz | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G`
   plus a process line `RocketLeague.exe (Rocket League)`.
 - `layout=fps-only`: a single FPS number with a drop shadow, no background by
   default. CPU/GPU/RAM are never polled in this layout (PDH, DXGI and NVML are
@@ -54,7 +61,7 @@ game window.
 | `position` | `top-left` | `top-left`, `top-right`, `bottom-left`, `bottom-right` |
 | `scale` | `100` | 50–200 (%) |
 | `background_opacity` | `100` | 0–100 (%) |
-| `show_fps`, `show_cpu`, `show_gpu`, `show_gpu_clock`, `show_vram`, `show_ram`, `show_process` | `1` | `0`/`1` |
+| `show_fps`, `show_cpu`, `show_cpu_clock`, `show_gpu`, `show_gpu_clock`, `show_vram`, `show_ram`, `show_process` | `1` | `0`/`1` |
 | `fahrenheit` | `0` | `0`/`1` |
 | `min_fps` | `20` | 1–1000; a foreground app below this is not treated as a game |
 | `ignore` | `explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe` | comma-separated exe names |
@@ -70,8 +77,9 @@ back to the default for that key.
 cargo build --release
 ```
 
-Single static-CRT exe, one dependency (`windows`). `pdh.dll`, `dxgi.dll` and
-`version.dll` are delay-loaded, so the FPS-only layout never maps them.
+Single static-CRT exe, one dependency (`windows`). `pdh.dll`, `dxgi.dll`,
+`version.dll` and `dwmapi.dll` are delay-loaded, so the FPS-only layout never
+maps them.
 
 ## CI and releases
 

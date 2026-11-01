@@ -8,7 +8,7 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         // Heavy providers stay unloaded until the Steam layout polls them, so the
         // FPS-only layout never maps pdh.dll/dxgi.dll/version.dll (spec: lazy resources).
-        for dll in ["pdh.dll", "dxgi.dll", "version.dll"] {
+        for dll in ["pdh.dll", "dxgi.dll", "version.dll", "dwmapi.dll"] {
             println!("cargo:rustc-link-arg-bins=/DELAYLOAD:{dll}");
         }
         println!("cargo:rustc-link-arg-bins=delayimp.lib");
