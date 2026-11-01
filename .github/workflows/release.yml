@@ -30,10 +30,12 @@ jobs:
 
       - name: Package
         shell: pwsh
+        # Zip holds only fps-overlay.exe at its root (no folder, no config.ini), so
+        # extracting over an install replaces the exe and keeps the user's settings.
         run: |
-          $name = "fps-overlay-${{ github.ref_name }}-x86_64-windows.exe"
+          $name = "fps-overlay-${{ github.ref_name }}-x86_64-windows.zip"
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item target/release/fps-overlay.exe "dist/$name"
+          Compress-Archive -Path target/release/fps-overlay.exe -DestinationPath "dist/$name"
           $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
           "$hash  $name" | Out-File -Encoding ascii "dist/$name.sha256"
 

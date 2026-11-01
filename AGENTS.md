@@ -118,7 +118,7 @@ git tag v0.2.0; git push origin v0.2.0
 | `build.rs` | `/DELAYLOAD` for pdh/dxgi/version/dwmapi, the Common Controls v6 manifest, and the icon via SDK `rc.exe` (if `rc.exe` isn't found, the build still succeeds with the stock icon) |
 | `.cargo/config.toml` | `+crt-static` for `x86_64-pc-windows-msvc` only. Linker args belong in `build.rs` (`rustc-link-arg-bins`) so they don't apply to the build script |
 | `.github/workflows/ci.yml` | Push to `main` / PR: `fmt --check`, clippy `-D warnings`, tests, release build, exe uploaded as an artifact (windows-latest) |
-| `.github/workflows/release.yml` | Tag `vX.Y.Z[-pre]`: checks the tag is semver and equals `Cargo.toml` `version`, builds, publishes a GitHub Release with the exe + `.sha256` (`-pre` tags become pre-releases) |
+| `.github/workflows/release.yml` | Tag `vX.Y.Z[-pre]`: checks the tag is semver and equals `Cargo.toml` `version`, builds, publishes a GitHub Release with `fps-overlay-vX.Y.Z-x86_64-windows.zip` (only `fps-overlay.exe` at its root, so it extracts over an install) + `.sha256` (`-pre` tags become pre-releases) |
 
 ## Runtime/Tooling Preferences
 

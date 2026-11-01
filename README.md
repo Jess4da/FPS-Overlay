@@ -88,8 +88,12 @@ maps them.
   is uploaded as a workflow artifact.
 - `.github/workflows/release.yml`: pushing a semver tag `vMAJOR.MINOR.PATCH`
   (optionally `-pre`, published as a pre-release) builds and publishes a GitHub
-  release with the exe and its SHA-256. The tag must match `version` in
-  `Cargo.toml`.
+  release with `fps-overlay-vX.Y.Z-x86_64-windows.zip` and its SHA-256. The tag
+  must match `version` in `Cargo.toml`.
+
+**Updating:** exit FPS Overlay from the tray (a running exe can't be
+overwritten), then extract the zip into the install folder and replace. The zip
+holds only `fps-overlay.exe`, so `config.ini` and Start with Windows are kept.
 
 ```
 # bump version in Cargo.toml first, commit, then:
