@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed, Ordering::Release};
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering::Relaxed, Ordering::Release};
 use std::thread::JoinHandle;
 
 use windows::core::{GUID, PCWSTR, PWSTR};
@@ -37,7 +37,10 @@ pub struct Shared {
     pub sample_pid: AtomicU32,
     /// QPC timestamp of the sample, 0 = none.
     pub sample_qpc: AtomicI64,
-    pub saw_user_mode: AtomicBool,
+    /// PID for which a DXGI/D3D9 present was counted since it became the target;
+    /// 0 = none. Read it against the current target, never as a bare flag: a
+    /// stale `true` would keep DxgKrnl off for the next (Vulkan/GL) game.
+    pub saw_pid: AtomicU32,
 }
 
 impl Shared {
@@ -47,7 +50,7 @@ impl Shared {
             fps_bits: AtomicU32::new(0),
             sample_pid: AtomicU32::new(0),
             sample_qpc: AtomicI64::new(0),
-            saw_user_mode: AtomicBool::new(false),
+            saw_pid: AtomicU32::new(0),
         }
     }
 }
@@ -331,7 +334,7 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
         // even if no event ever shows up for it (Vulkan/OpenGL).
         consumer.last_target = target;
         consumer.counter.reset(target, header.TimeStamp);
-        consumer.shared.saw_user_mode.store(false, Relaxed);
+        consumer.shared.saw_pid.store(0, Relaxed);
     }
     if header.ProcessId != target {
         return;
@@ -345,9 +348,8 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
         // Release last: readers load sample_qpc with Acquire, then the fields above.
         consumer.shared.sample_qpc.store(header.TimeStamp, Release);
     }
-    consumer
-        .shared
-        .saw_user_mode
-        .store(consumer.counter.saw_user_mode(), Relaxed);
+    if consumer.counter.saw_user_mode() {
+        consumer.shared.saw_pid.store(target, Relaxed);
+    }
 }
 

@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::{Acquire, Relaxed, Re
 
 use windows::core::{BOOL, PCWSTR, w};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
 use windows::Win32::Security::{TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
@@ -25,7 +26,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
+    SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -50,6 +52,8 @@ thread_local! {
 /// Message window; the console-control handler runs on its own thread, so it
 /// posts to this window instead of re-entering our state.
 static MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
+/// Win32 code of a fatal provider failure, shown after the message loop ends.
+static FATAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 struct App {
     cfg: Config,
@@ -64,7 +68,8 @@ struct App {
     fg_pid: u32,
     fg_hwnd: HWND,
     target: u32,
-    anchor: HWND,
+    anchor_mon: HMONITOR,
+    anchor_dpi: u32,
     stats: Stats,
     frame: Option<layout::Frame>,
     label: (u32, Option<String>),
@@ -112,7 +117,16 @@ impl App {
             SHARED.target_pid.store(target, Release);
         }
         // Idempotent: a no-op unless the provider set actually changed.
-        let _ = self.etw.set_providers(out.providers);
+        if let Err(e) = self.etw.set_providers(out.providers) {
+            // Only a DXGI enable failure gets here (D3D9/DxgKrnl are tolerated
+            // inside set_providers). The spec wants a message box and exit, but
+            // showing it from inside a tick would pump messages under the App
+            // borrow, so record it and let main show it after the loop.
+            FATAL.store(e.code().0 as u32, Relaxed);
+            // SAFETY: posts to this thread's queue, breaking GetMessageW.
+            unsafe { PostQuitMessage(0) };
+            return;
+        }
 
         if out.timer != self.timer {
             // SAFETY: our own timer on our own window.
@@ -164,7 +178,7 @@ impl App {
         // watching a process that is no longer (or no longer only) foreground.
         // SAFETY: read-only query.
         let fg = unsafe { GetForegroundWindow() };
-        if fg != self.fg_hwnd {
+        if !fg.0.is_null() && fg != self.fg_hwnd {
             self.foreground(fg);
         }
         // Load the timestamp first: it is the commit flag for the other fields.
@@ -176,7 +190,7 @@ impl App {
                 ms_between(self.freq, qpc, at),
             )
         });
-        let saw_user_mode = SHARED.saw_user_mode.load(Relaxed);
+        let saw_user_mode = self.target != 0 && SHARED.saw_pid.load(Relaxed) == self.target;
         let out = self.gate.on_tick(sample, saw_user_mode, &self.cfg, now);
         self.apply(out);
 
@@ -212,16 +226,18 @@ impl App {
         self.stats.fps = out.fps;
 
         let anchor = self.fg_hwnd;
+        let (mon, dpi) = monitor_of(anchor);
         let frame = layout::build(&self.stats, &self.cfg);
         let want = needs_draw(
             self.shown,
-            self.anchor != anchor,
+            mon != self.anchor_mon || dpi != self.anchor_dpi,
             self.frame.as_ref() != Some(&frame),
         );
         let r = if want { self.overlay.draw(&frame, anchor) } else { Ok(()) };
         if want && r.is_ok() {
             self.frame = Some(frame);
-            self.anchor = anchor;
+            self.anchor_mon = mon;
+            self.anchor_dpi = dpi;
             self.shown = true;
         }
     }
@@ -256,6 +272,18 @@ fn interval(timer: Timer) -> u32 {
         Timer::Off => 0,
         Timer::Probe => 250,
         Timer::Game => 100,
+        Timer::SlowProbe => 1000,
+    }
+}
+
+/// Monitor and effective DPI of `hwnd`, for placement-change detection.
+fn monitor_of(hwnd: HWND) -> (HMONITOR, u32) {
+    // SAFETY: read-only queries; a null anchor maps to the primary monitor.
+    unsafe {
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let (mut x, mut y) = (96u32, 96u32);
+        let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut x, &mut y);
+        (mon, if x == 0 { 96 } else { x })
     }
 }
 
@@ -393,7 +421,8 @@ fn main() {
         fg_pid: 0,
         fg_hwnd: HWND::default(),
         target: 0,
-        anchor: HWND::default(),
+        anchor_mon: HMONITOR::default(),
+        anchor_dpi: 0,
         stats: Stats::default(),
         frame: None,
         label: (0, None),
@@ -428,6 +457,11 @@ fn main() {
 
     // Explicit drop: stops the ETW session and frees the overlay before exit.
     APP.with(|slot| drop(slot.borrow_mut().take()));
+
+    let code = FATAL.load(Relaxed);
+    if code != 0 {
+        show_error(&format!("DXGI provider failed: 0x{code:08X}"));
+    }
 }
 
 fn main_window() -> Option<HWND> {
@@ -479,8 +513,18 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             LRESULT(0)
         }
         WM_ENDSESSION => {
-            // SAFETY: posts to the message loop's thread.
-            unsafe { PostQuitMessage(0) };
+            // wParam FALSE means the shutdown was cancelled: keep running.
+            if wp.0 != 0 {
+                // Windows may end the process as soon as we return, so drop the
+                // state here: Etw::drop stops the session instead of orphaning it.
+                APP.with(|slot| {
+                    if let Ok(mut slot) = slot.try_borrow_mut() {
+                        drop(slot.take());
+                    }
+                });
+                // SAFETY: posts to the message loop's thread.
+                unsafe { PostQuitMessage(0) };
+            }
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },

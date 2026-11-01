@@ -11,6 +11,8 @@ pub enum Timer {
     Probe,
     /// 100 ms.
     Game,
+    /// 1000 ms: an unqualified candidate that has backed off.
+    SlowProbe,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -29,6 +31,7 @@ pub struct GameGate {
     user_visible: bool,
     fg_since_ms: u64,
     providers: Providers,
+    backoff: bool,
 }
 
 impl GameGate {
@@ -40,6 +43,7 @@ impl GameGate {
             user_visible: true,
             fg_since_ms: 0,
             providers: Providers::Off,
+            backoff: false,
         }
     }
 
@@ -51,6 +55,7 @@ impl GameGate {
         }
         self.pid = pid;
         self.qualified = false;
+        self.backoff = false;
         self.fg_since_ms = now_ms;
         self.candidate = match (pid, exe) {
             (Some(p), Some(e)) => p != std::process::id() && !cfg.ignore.iter().any(|i| i.eq_ignore_ascii_case(e)),
@@ -69,7 +74,16 @@ impl GameGate {
             Some(pid) == self.pid && age <= 2000 && now_ms.saturating_sub(age) >= self.fg_since_ms
         });
         if !self.qualified {
-            if !saw_user_mode && now_ms.saturating_sub(self.fg_since_ms) >= 1500 {
+            let el = now_ms.saturating_sub(self.fg_since_ms);
+            if el >= 10_000 {
+                // Back off: a candidate this long without a single FPS sample is
+                // almost certainly not a game (VS Code, Notepad, a launcher).
+                // ponytail: a Vulkan/GL game that renders nothing for >10 s needs
+                // a refocus to get its kernel fallback back; elsewhere the
+                // 250 ms probe plus DxgKrnl would run forever.
+                self.backoff = true;
+                self.providers = Providers::UserMode;
+            } else if !saw_user_mode && el >= 1500 {
                 self.providers = Providers::WithKernel;
             }
             if fresh.is_some_and(|(_, fps, _)| fps >= cfg.min_fps) {
@@ -93,7 +107,13 @@ impl GameGate {
             return GateOut { timer: Timer::Off, providers: Providers::Off, visible: false, fps: None };
         }
         GateOut {
-            timer: if self.qualified { Timer::Game } else { Timer::Probe },
+            timer: if self.qualified {
+                Timer::Game
+            } else if self.backoff {
+                Timer::SlowProbe
+            } else {
+                Timer::Probe
+            },
             providers: self.providers,
             visible: self.qualified && self.user_visible,
             fps,
@@ -145,6 +165,50 @@ mod tests {
         let mut g = gate_at(&cfg, 1000);
         assert_eq!(g.on_tick(None, false, &cfg, 2499).providers, Providers::UserMode);
         assert_eq!(g.on_tick(None, false, &cfg, 2500).providers, Providers::WithKernel);
+    }
+
+    #[test]
+    fn backs_off_after_10s() {
+        let cfg = Config::default();
+        let mut g = gate_at(&cfg, 0);
+        let out = g.on_tick(None, false, &cfg, 1500);
+        assert_eq!(out.providers, Providers::WithKernel);
+        assert_eq!(out.timer, Timer::Probe);
+        // 9999 ms: still probing hot, DxgKrnl still on.
+        let out = g.on_tick(None, false, &cfg, 9_999);
+        assert_eq!(out.providers, Providers::WithKernel);
+        assert_eq!(out.timer, Timer::Probe);
+        // 10000 ms: give up on the kernel firehose, slow probe, user mode only.
+        let out = g.on_tick(None, false, &cfg, 10_000);
+        assert_eq!(out.providers, Providers::UserMode);
+        assert_eq!(out.timer, Timer::SlowProbe);
+    }
+
+    #[test]
+    fn qualifies_after_backoff() {
+        let cfg = Config::default();
+        let mut g = gate_at(&cfg, 0);
+        assert_eq!(g.on_tick(None, false, &cfg, 10_000).timer, Timer::SlowProbe);
+        // A user-mode sample that arrives after the back-off still qualifies.
+        // Third field is the sample's age in ms, not its timestamp.
+        let out = g.on_tick(Some((100, 60.0, 500)), true, &cfg, 11_000);
+        assert!(g.is_game());
+        assert!(out.visible);
+        assert_eq!(out.timer, Timer::Game);
+        assert_eq!(out.fps, Some(60.0));
+        assert_eq!(out.providers, Providers::UserMode);
+    }
+
+    #[test]
+    fn backoff_cleared_by_new_foreground() {
+        let cfg = Config::default();
+        let mut g = gate_at(&cfg, 0);
+        g.on_tick(None, false, &cfg, 10_000);
+        g.on_foreground(Some(300), Some("next.exe"), &cfg, 20_000);
+        assert_eq!(g.on_tick(None, false, &cfg, 20_999).timer, Timer::Probe);
+        let out = g.on_tick(None, false, &cfg, 21_500);
+        assert_eq!(out.timer, Timer::Probe);
+        assert_eq!(out.providers, Providers::WithKernel);
     }
 
     #[test]

@@ -30,6 +30,10 @@ const CLASS: PCWSTR = w!("FpsOverlay");
 const WHITE_RGB: Rgb = Rgb(255, 255, 255);
 const SHADOW_RGB: Rgb = Rgb(0, 0, 0);
 
+/// Mask pixel with no text coverage. Must stay black: `compose` adds the
+/// background alpha itself.
+const MASK_EMPTY: u32 = 0;
+
 /// `cov` from the mask's red channel, `a = cov + bg·(1−cov)`; rgb is already
 /// premultiplied because it was drawn on black. `out` is BGRA as `0xAARRGGBB`.
 pub fn compose(color: &[u32], mask: &[u32], bg_alpha: u8, out: &mut [u32]) {
@@ -117,6 +121,8 @@ impl Drop for Dib {
 pub struct Overlay {
     hwnd: HWND,
     dc: HDC, // measuring DC: no bitmap, only fonts are selected into it
+    /// The DC's original object, selected back before cached fonts are deleted.
+    dc_old: Option<HGDIOBJ>,
     color: Option<Dib>,
     mask: Option<Dib>,
     out: Vec<u32>,
@@ -161,6 +167,7 @@ impl Overlay {
             Ok(Self {
                 hwnd,
                 dc: CreateCompatibleDC(None),
+                dc_old: None,
                 color: None,
                 mask: None,
                 out: Vec::new(),
@@ -211,6 +218,13 @@ impl Overlay {
         self.color = None;
         self.mask = None;
         self.out = Vec::new();
+        // A font still selected into the DC cannot be deleted: put the original
+        // object back first, or the DeleteObject below silently fails.
+        if let Some(old) = self.dc_old.take() {
+            unsafe {
+                SelectObject(self.dc, old);
+            }
+        }
         for (_, _, font) in self.fonts.drain(..) {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ(font.0));
@@ -233,7 +247,10 @@ impl Overlay {
             let mut widths = Vec::with_capacity(line.runs.len());
             let mut width = 0;
             unsafe {
-                SelectObject(self.dc, HGDIOBJ(font.0));
+                let prev = SelectObject(self.dc, HGDIOBJ(font.0));
+                if self.dc_old.is_none() {
+                    self.dc_old = Some(prev);
+                }
                 let _ = GetTextMetricsW(self.dc, &mut tm);
             }
             for run in &line.runs {
@@ -260,7 +277,9 @@ impl Overlay {
         let color = self.color.as_ref().expect("DIBs exist");
         let mask = self.mask.as_ref().expect("DIBs exist");
         color.fill(0);
-        mask.fill(u32::from(bg) * 0x0001_0101);
+        // Coverage only: `compose` adds the background itself, so a mask filled
+        // with the background colour would count it twice (50 % → 75 %).
+        mask.fill(MASK_EMPTY);
 
         let mut y = pady;
         for (line, (font, height, _, widths)) in frame.lines.iter().zip(&lines) {
@@ -421,6 +440,17 @@ mod tests {
         let mut out = vec![0u32; 4];
         compose(&color, &mask, 255, &mut out);
         assert_eq!(out, vec![0xFF00_0000u32; 4]);
+    }
+
+    #[test]
+    fn half_bg_no_text_is_half_alpha() {
+        // Regression: the coverage mask must carry text only. If it were filled
+        // with the background (128) this would come out at ~190 instead of 128.
+        assert_eq!(MASK_EMPTY, 0);
+        let (color, mask) = (vec![0u32], vec![MASK_EMPTY]);
+        let mut out = vec![0u32];
+        compose(&color, &mask, 128, &mut out);
+        assert_eq!(out[0] >> 24, 128);
     }
 
     #[test]

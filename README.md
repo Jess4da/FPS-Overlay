@@ -70,6 +70,6 @@ Single static-CRT exe, one dependency (`windows`). `pdh.dll`, `dxgi.dll` and
 
 Release build measured on this machine:
 
-- `fps-overlay.exe`: 323,072 bytes (315.5 KiB), no DLLs to ship.
+- `fps-overlay.exe`: 324,096 bytes (316.5 KiB), no DLLs to ship.
 - Import table: system DLLs only (`kernel32`, `user32`, `gdi32`, `shell32`,
   `advapi32`, `oleaut32`, `ntdll`).
