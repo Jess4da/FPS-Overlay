@@ -1,10 +1,3 @@
 [target.x86_64-pc-windows-msvc]
-rustflags = [
-  "-C", "target-feature=+crt-static",
-  # Heavy providers stay unloaded until the Steam layout actually polls them,
-  # so the FPS-only layout never maps pdh.dll/dxgi.dll (spec: lazy resources).
-  "-C", "link-arg=/DELAYLOAD:pdh.dll",
-  "-C", "link-arg=/DELAYLOAD:dxgi.dll",
-  "-C", "link-arg=/DELAYLOAD:version.dll",
-  "-C", "link-arg=delayimp.lib",
-]
+rustflags = ["-C", "target-feature=+crt-static"]
+# Delay-load flags live in build.rs (rustc-link-arg-bins) so they don't hit the build script.

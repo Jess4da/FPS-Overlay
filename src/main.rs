@@ -37,9 +37,11 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyMenu, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetCursorPos, GetForegroundWindow,
-    GetMessageW, GetWindowThreadProcessId, IDI_APPLICATION, KillTimer, LoadIconW, MB_ICONERROR,
+    GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON, IDI_APPLICATION, IMAGE_ICON,
+    KillTimer, LR_DEFAULTCOLOR, LoadIconW, LoadImageW, MB_ICONERROR,
     MB_OK, MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SW_SHOWNORMAL, SetForegroundWindow, SetTimer,
+    RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL,
+    SetForegroundWindow, SetTimer,
     TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINEVENT_OUTOFCONTEXT,
     WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONUP, WM_QUERYENDSESSION,
     WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WINDOW_EX_STYLE, WS_OVERLAPPED,
@@ -49,8 +51,21 @@ const WM_TRAY: u32 = WM_APP + 1;
 const ID_EXIT: usize = 1;
 /// Explorer broadcasts this after it restarts; the tray icon must be re-added.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
-// ponytail: stock app icon (no .rc/build script); embed icon.ico via a resource if branding matters.
+/// Embedded icon (resource id 1, see build.rs) at the tray's small-icon size; stock icon fallback.
+fn tray_icon() -> HICON {
+    // SAFETY: own module handle; resource id 1 written by build.rs.
+    unsafe {
+        let module = GetModuleHandleW(None).unwrap_or_default();
+        let (w, h) = (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+        match LoadImageW(Some(module.into()), PCWSTR(1 as _), IMAGE_ICON, w, h, LR_DEFAULTCOLOR) {
+            Ok(h) => HICON(h.0),
+            Err(_) => LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
+        }
+    }
+}
+
 fn tray(hwnd: HWND, op: NOTIFY_ICON_MESSAGE) {
     let mut nid = NOTIFYICONDATAW {
         cbSize: size_of::<NOTIFYICONDATAW>() as u32,
@@ -58,8 +73,7 @@ fn tray(hwnd: HWND, op: NOTIFY_ICON_MESSAGE) {
         uID: 1,
         uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
         uCallbackMessage: WM_TRAY,
-        // SAFETY: stock system icon, no module handle.
-        hIcon: unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default(),
+        hIcon: tray_icon(),
         ..Default::default()
     };
     for (d, s) in nid.szTip.iter_mut().zip("FPS Overlay".encode_utf16()) {
