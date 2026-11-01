@@ -81,6 +81,7 @@ impl Default for Config {
 }
 
 pub fn parse(ini: &str) -> Config {
+    let ini = ini.strip_prefix('\u{feff}').unwrap_or(ini);
     let mut c = Config::default();
     // Keys before any header belong to [Overlay], so a header-less file still parses.
     let mut section = "overlay";
@@ -110,12 +111,14 @@ pub fn load() -> Config {
     else {
         return Config::default();
     };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => parse(&text),
-        Err(_) => {
+    match std::fs::read(&path) {
+        Ok(bytes) => parse(&String::from_utf8_lossy(&bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let _ = std::fs::write(&path, DEFAULT_INI);
             Config::default()
         }
+        // Any other error (permissions, sharing, I/O): never overwrite the user's file.
+        Err(_) => Config::default(),
     }
 }
 
@@ -212,6 +215,14 @@ mod tests {
         assert_eq!(c.layout, Layout::FpsOnly);
         assert!(c.fps_only_background);
         assert_eq!(parse("layout=bogus").layout, Layout::Steam);
+        // A later bogus value must not reset an earlier valid one.
+        assert_eq!(parse("layout=fps-only\nlayout=bogus").layout, Layout::FpsOnly);
+    }
+
+    #[test]
+    fn bom_prefixed_first_key() {
+        assert_eq!(parse("\u{feff}layout=fps-only").layout, Layout::FpsOnly);
+        assert_eq!(parse("\u{feff}[Overlay]\nlayout=fps-only").layout, Layout::FpsOnly);
     }
 
     #[test]
@@ -240,6 +251,9 @@ mod tests {
         assert_eq!(c.min_fps, d.min_fps);
         assert_eq!(c.toggle_key, d.toggle_key);
         assert_eq!(c.position, d.position);
+        // A later bad value must not reset an earlier valid one.
+        assert_eq!(parse("position=top-right\nposition=middle").position, Corner::TopRight);
+        assert_eq!(parse("scale=150\nscale=999").scale, 1.5);
     }
 
     #[test]
