@@ -48,8 +48,9 @@ fn description(path: &str) -> Option<String> {
     if size == 0 {
         return None;
     }
-    let mut data = vec![0u8; size as usize];
-    // SAFETY: `data` is `size` bytes, matching the requested size.
+    // Version data must be at least DWORD aligned.
+    let mut data = vec![0u32; (size as usize).div_ceil(4)];
+    // SAFETY: `data` holds at least `size` bytes, matching the requested size.
     if unsafe { GetFileVersionInfoW(name, Some(0), size, data.as_mut_ptr().cast()) }.is_err() {
         return None;
     }
@@ -61,7 +62,12 @@ fn description(path: &str) -> Option<String> {
         return None;
     }
     // SAFETY: `trans` points at one or more LANGID/CODEPAGE pairs; first one used.
-    let (lang, cp) = unsafe { (*(trans as *const u16), *((trans as *const u16).add(1))) };
+    let (lang, cp) = unsafe {
+        (
+            std::ptr::read_unaligned(trans.cast::<u16>()),
+            std::ptr::read_unaligned((trans as *const u8).add(2).cast::<u16>()),
+        )
+    };
     let sub = format!("\\StringFileInfo\\{lang:04x}{cp:04x}\\FileDescription");
     let sub: Vec<u16> = sub.encode_utf16().chain([0]).collect();
 
@@ -74,7 +80,12 @@ fn description(path: &str) -> Option<String> {
         return None;
     }
     // SAFETY: len counts UTF-16 units (including NUL) in the version block.
-    let s = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(ptr as *const u16, len as usize)) };
+    let s = unsafe {
+        let units: Vec<u16> = (0..len as usize)
+            .map(|i| std::ptr::read_unaligned((ptr as *const u8).add(i * 2).cast::<u16>()))
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
     let s = s.trim_matches(['\0', ' ']);
     (!s.is_empty()).then(|| s.to_string())
 }
