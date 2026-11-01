@@ -27,6 +27,9 @@ the key.
 | Show/hide the overlay | `Insert` (45) |
 | Exit | `End` (35) |
 
+A tray icon ("FPS Overlay") is always present: click or right-click it →
+**Exit FPS Overlay** to quit from anywhere.
+
 ## Layouts
 
 - `layout=steam` (default): one line `FPS 180 | CPU 15% | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G`

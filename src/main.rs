@@ -12,10 +12,10 @@ mod render;
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::{Acquire, Relaxed, Release}};
 
 use windows::core::{BOOL, PCWSTR, w};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
 use windows::Win32::Security::{TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
@@ -30,14 +30,61 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, EVENT_SYSTEM_FOREGROUND,
-    GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MB_ICONERROR, MB_OK,
-    MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOWNORMAL,
-    SetTimer, TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_ENDSESSION,
-    WM_CLOSE, WM_QUERYENDSESSION, WM_TIMER, WNDCLASSW, WINDOW_EX_STYLE, WS_OVERLAPPED,
+use windows::Win32::UI::Shell::{
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFY_ICON_MESSAGE, NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyMenu, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetWindowThreadProcessId, IDI_APPLICATION, KillTimer, LoadIconW, MB_ICONERROR,
+    MB_OK, MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW, PostMessageW, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SW_SHOWNORMAL, SetForegroundWindow, SetTimer,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONUP, WM_QUERYENDSESSION,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WINDOW_EX_STYLE, WS_OVERLAPPED,
+};
+
+const WM_TRAY: u32 = WM_APP + 1;
+const ID_EXIT: usize = 1;
+/// Explorer broadcasts this after it restarts; the tray icon must be re-added.
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+
+// ponytail: stock app icon (no .rc/build script); embed icon.ico via a resource if branding matters.
+fn tray(hwnd: HWND, op: NOTIFY_ICON_MESSAGE) {
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+        uCallbackMessage: WM_TRAY,
+        // SAFETY: stock system icon, no module handle.
+        hIcon: unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default(),
+        ..Default::default()
+    };
+    for (d, s) in nid.szTip.iter_mut().zip("FPS Overlay".encode_utf16()) {
+        *d = s;
+    }
+    // SAFETY: nid is fully initialised for this call.
+    let _ = unsafe { Shell_NotifyIconW(op, &nid) };
+}
+
+fn tray_menu(hwnd: HWND) {
+    // SAFETY: menu is created, shown modally and destroyed in this scope.
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Exit FPS Overlay"));
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // Required so the menu closes when the user clicks elsewhere.
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None);
+        let _ = DestroyMenu(menu);
+        if cmd.0 as usize == ID_EXIT {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
 
 use crate::config::{Config, Layout};
 use crate::etw::{Providers, SHARED};
@@ -400,6 +447,15 @@ fn main() {
         return;
     };
     MAIN_HWND.store(hwnd.0 as usize, Relaxed);
+    // SAFETY: plain registrations on our own window.
+    unsafe {
+        TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Relaxed);
+        // We run elevated; UIPI drops messages from the non-elevated Explorer unless allowed.
+        for m in [WM_TRAY, TASKBAR_CREATED.load(Relaxed)] {
+            let _ = ChangeWindowMessageFilterEx(hwnd, m, MSGFLT_ALLOW, None);
+        }
+    }
+    tray(hwnd, NIM_ADD);
 
     let mut freq = 0i64;
     let mut t0 = 0i64;
@@ -457,6 +513,7 @@ fn main() {
 
     // Explicit drop: stops the ETW session and frees the overlay before exit.
     APP.with(|slot| drop(slot.borrow_mut().take()));
+    tray(hwnd, NIM_DELETE);
 
     let code = FATAL.load(Relaxed);
     if code != 0 {
@@ -507,6 +564,16 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             LRESULT(0)
         }
         WM_QUERYENDSESSION => LRESULT(1),
+        WM_TRAY => {
+            if matches!(lp.0 as u32, WM_RBUTTONUP | WM_LBUTTONUP) {
+                tray_menu(hwnd);
+            }
+            LRESULT(0)
+        }
+        m if m != 0 && m == TASKBAR_CREATED.load(Relaxed) => {
+            tray(hwnd, NIM_ADD);
+            LRESULT(0)
+        }
         WM_CLOSE => {
             // SAFETY: posts to the message loop's thread.
             unsafe { PostQuitMessage(0) };
