@@ -51,8 +51,8 @@ Tray WM_TRAY: double-click → settings::open → Save → config::save + App::r
 
 ```powershell
 cargo build --release                          # target\release\fps-overlay.exe
-cargo test                                     # all unit tests (70)
-cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process)
+cargo test                                     # all unit tests (71)
+cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process, autostart, update)
 cargo test poll_smoke -- --nocapture           # real PDH/DXGI/NVML poll, prints Sample + timing (~1.1 s)
 cargo clippy --release --all-targets -- -D warnings
 cargo fmt                                      # CI runs `cargo fmt --check`; format before committing

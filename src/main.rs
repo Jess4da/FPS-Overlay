@@ -10,6 +10,7 @@ mod metrics;
 mod process;
 mod render;
 mod settings;
+mod update;
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -42,17 +43,22 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CS_DBLCLKS, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW,
     DefWindowProcW, DestroyMenu, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetCursorPos,
     GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON,
-    IDI_APPLICATION, IMAGE_ICON, IsDialogMessageW, KillTimer, LR_DEFAULTCOLOR, LoadIconW,
-    LoadImageW, MB_ICONERROR, MB_OK, MF_CHECKED, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW,
-    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
-    SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow, SetMenuDefaultItem, SetTimer,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION,
-    WM_LBUTTONDBLCLK, WM_QUERYENDSESSION, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+    IDI_APPLICATION, IDYES, IMAGE_ICON, IsDialogMessageW, KillTimer, LR_DEFAULTCOLOR, LoadIconW,
+    LoadImageW, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MF_CHECKED, MF_SEPARATOR,
+    MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow,
+    SetMenuDefaultItem, SetTimer, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE,
+    WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WS_OVERLAPPED,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
 const WM_TRAY: u32 = WM_APP + 1;
+/// Update check result: lParam is a `Box<String>` tag leaked as `usize`.
+const WM_UPDATE: u32 = WM_APP + 2;
+/// Set when an update was installed; the loop exit then starts the new exe.
+static RESTART: AtomicBool = AtomicBool::new(false);
 const ID_EXIT: usize = 1;
 const ID_SETTINGS: usize = 2;
 const ID_AUTOSTART: usize = 3;
@@ -581,6 +587,7 @@ fn main() {
         let _ = SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
     }
 
+    update::cleanup();
     let cfg = config::load();
     let etw = match etw::Etw::start(&SHARED) {
         Ok(e) => e,
@@ -647,6 +654,21 @@ fn main() {
         t0,
     };
     APP.with(|slot| *slot.borrow_mut() = Some(app));
+    // One check per launch, off the UI thread; the thread ends right after.
+    std::thread::spawn(|| {
+        if let Some(tag) = update::check() {
+            let p = Box::into_raw(Box::new(tag)) as usize;
+            // SAFETY: MAIN_HWND was stored above; the box is reclaimed in WM_UPDATE.
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(MAIN_HWND.load(Relaxed) as *mut c_void)),
+                    WM_UPDATE,
+                    WPARAM(0),
+                    LPARAM(p as isize),
+                );
+            }
+        }
+    });
 
     // SAFETY: hooks/handlers live for the process lifetime; the loop pumps them.
     unsafe {
@@ -682,6 +704,9 @@ fn main() {
     let code = FATAL.load(Relaxed);
     if code != 0 {
         show_error(&format!("DXGI provider failed: 0x{code:08X}"));
+    }
+    if RESTART.load(Relaxed) {
+        update::restart();
     }
 }
 
@@ -741,6 +766,12 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             tray(hwnd, NIM_ADD);
             LRESULT(0)
         }
+        WM_UPDATE => {
+            // SAFETY: lParam is the Box<String> leaked by the update thread, posted once.
+            let tag = unsafe { Box::from_raw(lp.0 as *mut String) };
+            prompt_update(hwnd, &tag);
+            LRESULT(0)
+        }
         WM_CLOSE => {
             // SAFETY: posts to the message loop's thread.
             unsafe { PostQuitMessage(0) };
@@ -762,6 +793,43 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+    }
+}
+
+/// Ask, then install and quit; the loop exit restarts the new exe.
+/// ponytail: the download blocks the UI thread (a few seconds; the overlay freezes).
+/// Move `install` to a thread if that bites.
+fn prompt_update(hwnd: HWND, tag: &str) {
+    let q = wide(&format!(
+        "FPS Overlay {tag} is available (you have v{}).\nInstall it now and restart?",
+        env!("CARGO_PKG_VERSION")
+    ));
+    // SAFETY: NUL-terminated buffers outlive the modal calls; no APP borrow held.
+    unsafe {
+        if MessageBoxW(
+            Some(hwnd),
+            PCWSTR(q.as_ptr()),
+            w!("FPS Overlay update"),
+            MB_YESNO | MB_ICONQUESTION,
+        ) != IDYES
+        {
+            return;
+        }
+        match update::install(tag) {
+            Ok(()) => {
+                RESTART.store(true, Relaxed);
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+            Err(e) => {
+                let t = wide(&format!("Update failed:\n{e}"));
+                MessageBoxW(
+                    Some(hwnd),
+                    PCWSTR(t.as_ptr()),
+                    w!("FPS Overlay"),
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        }
     }
 }
 

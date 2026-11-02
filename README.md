@@ -33,13 +33,18 @@ A tray icon ("FPS Overlay") is always present:
   window. **Save** validates, writes `config.ini` and applies immediately (no
   restart); **Cancel** discards.
 - **Right-click** it for **Settings…**, **Start with Windows** (checkmark toggle;
-  also a checkbox in Settings) and **Exit FPS Overlay**. Start with Windows
-  creates a Task Scheduler logon task named `FPS Overlay` that runs the exe at
-  highest privileges, so there's no UAC prompt at login. Untick it to delete the
-  task. If you move the exe, untick and tick again.
+  also a checkbox in Settings; off by default) and **Exit FPS Overlay**. Start
+  with Windows creates a Task Scheduler logon task named `FPS Overlay` that runs
+  the exe at highest privileges, so there's no UAC prompt at login. Untick it to
+  delete the task. If you move the exe, untick and tick again.
 - **Ignoring an app** the overlay shouldn't show for: after it appears, right-click
   the tray → **Don't show for `name.exe`** (saved and applied at once). Or in
   Settings, **Add…** next to the ignore list picks from running apps with a window.
+- **Updates:** at each launch, a background thread asks GitHub for the latest
+  release (one `curl.exe` request, then the thread exits). If it's newer, you get
+  a Yes/No prompt. **Yes** downloads the release zip, swaps the exe (the old one
+  is kept as `fps-overlay.exe.old` and deleted on the next start) and restarts.
+  Needs Windows 10 1803+ for the inbox `curl.exe`/`tar.exe`.
 
 ## Layouts
 

@@ -37,7 +37,8 @@ pub fn set(on: bool) -> Result<(), String> {
         std::env::var("USERDOMAIN").unwrap_or_default(),
         std::env::var("USERNAME").map_err(|e| e.to_string())?
     );
-    let xml = task_xml(&exe.to_string_lossy(), &user);
+    let dir = exe.parent().map(|d| d.to_string_lossy().into_owned());
+    let xml = task_xml(&exe.to_string_lossy(), dir.as_deref().unwrap_or(""), &user);
     // schtasks reads UTF-16 LE with BOM, matching the XML declaration.
     let bytes: Vec<u8> = std::iter::once(0xFEFF)
         .chain(xml.encode_utf16())
@@ -64,21 +65,27 @@ fn esc(s: &str) -> String {
 }
 
 /// XML instead of `/SC ONLOGON` flags: the flag defaults stop the task on battery
-/// and after 72 h, which would kill the overlay.
-fn task_xml(exe: &str, user: &str) -> String {
-    let (exe, user) = (esc(exe), esc(user));
+/// and after 72 h, which would kill the overlay. Mirrors a known-good logon task:
+/// schema 1.4, `StartWhenAvailable` (retry a missed logon start), never stop on
+/// idle end, unified engine, and a working directory next to the exe.
+fn task_xml(exe: &str, dir: &str, user: &str) -> String {
+    let (exe, dir, user) = (esc(exe), esc(dir), esc(user));
     format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers><LogonTrigger><UserId>{user}</UserId></LogonTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
   <Settings>
+    <AllowHardTerminate>false</AllowHardTerminate>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
   </Settings>
-  <Actions Context="Author"><Exec><Command>{exe}</Command></Exec></Actions>
+  <Actions Context="Author"><Exec><Command>{exe}</Command><WorkingDirectory>{dir}</WorkingDirectory></Exec></Actions>
 </Task>
 "#
     )
@@ -90,8 +97,13 @@ mod tests {
 
     #[test]
     fn task_xml_escapes_markup_in_path_and_user() {
-        let x = task_xml(r"C:\A&B <x>\fps-overlay.exe", "PC\\Tom&Jerry");
+        let x = task_xml(
+            r"C:\A&B <x>\fps-overlay.exe",
+            r"C:\A&B <x>",
+            "PC\\Tom&Jerry",
+        );
         assert!(x.contains(r"<Command>C:\A&amp;B &lt;x&gt;\fps-overlay.exe</Command>"));
+        assert!(x.contains(r"<WorkingDirectory>C:\A&amp;B &lt;x&gt;</WorkingDirectory>"));
         assert!(x.contains("<UserId>PC\\Tom&amp;Jerry</UserId>"));
         assert!(!x.contains("A&B"));
     }
