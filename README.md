@@ -69,6 +69,7 @@ game window.
 | `show_fps`, `show_cpu`, `show_cpu_clock`, `show_gpu`, `show_gpu_clock`, `show_vram`, `show_ram`, `show_process` | `1` | `0`/`1` |
 | `fahrenheit` | `0` | `0`/`1` |
 | `min_fps` | `20` | 1–1000; a foreground app below this is not treated as a game |
+| `fullscreen_only` | `0` | `0`/`1`; show only while the game covers its whole monitor (exclusive fullscreen or borderless). Detection still runs for windowed games, the overlay just stays hidden |
 | `ignore` | `explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe` | comma-separated exe names |
 | `toggle_key` | `45` (Insert) | 1–254 (virtual-key code) |
 | `exit_key` | `35` (End) | 1–254 (virtual-key code) |

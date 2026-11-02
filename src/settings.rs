@@ -62,7 +62,7 @@ const ID_AUTOSTART: i32 = 108;
 const ID_ADD_IGNORE: i32 = 109;
 /// Checkboxes, in `Fields::checks` order.
 const ID_CHECKS: i32 = 110;
-const CHECKS: [&str; 10] = [
+const CHECKS: [&str; 11] = [
     "Background in FPS-only layout",
     "FPS",
     "CPU usage",
@@ -73,6 +73,7 @@ const CHECKS: [&str; 10] = [
     "RAM",
     "Process name",
     "Fahrenheit",
+    "Only show in fullscreen / borderless",
 ];
 
 const LAYOUTS: [&str; 2] = ["Steam-like bar", "FPS only"];
@@ -108,8 +109,9 @@ pub struct Fields<'a> {
     pub opacity: &'a str,
     pub min_fps: &'a str,
     pub ignore: &'a str,
-    /// fps_only_background, fps, cpu, cpu_clock, gpu, gpu_clock, vram, ram, process, fahrenheit
-    pub checks: [bool; 10],
+    /// fps_only_background, fps, cpu, cpu_clock, gpu, gpu_clock, vram, ram, process,
+    /// fahrenheit, fullscreen_only
+    pub checks: [bool; 11],
     pub toggle_key: u8,
     pub exit_key: u8,
 }
@@ -140,6 +142,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         ram,
         process,
         fahrenheit,
+        fullscreen_only,
     ] = f.checks;
     Ok(Config {
         layout: if f.layout == 1 {
@@ -166,6 +169,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         show_process: process,
         fahrenheit,
         min_fps: min_fps as f32,
+        fullscreen_only,
         ignore: config::ignore_list(f.ignore),
         toggle_key: f.toggle_key,
         exit_key: f.exit_key,
@@ -225,7 +229,7 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
 
         let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         let ex = WS_EX_CONTROLPARENT;
-        let (cw, ch) = (px(400), px(518));
+        let (cw, ch) = (px(400), px(542));
         let mut r = RECT {
             left: 0,
             top: 0,
@@ -490,7 +494,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
     }
 
     // Game detection
-    group("Game detection", 324, 92);
+    group("Game detection", 324, 116);
     label("Minimum FPS to count as a game", 24, 346, 190);
     edit(
         &(c.min_fps.round() as u32).to_string(),
@@ -513,9 +517,10 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         25,
         ID_ADD_IGNORE,
     );
+    check(CHECKS[10], 24, 418, 352, ID_CHECKS + 10, c.fullscreen_only);
 
     // Hotkeys (in game only)
-    group("Hotkeys (work only while a game is in front)", 424, 54);
+    group("Hotkeys (work only while a game is in front)", 448, 54);
     let keys = |cur: u8| {
         let mut items: Vec<(String, usize)> = KEYS
             .iter()
@@ -530,17 +535,17 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
             .unwrap_or(0);
         (items, sel)
     };
-    label("Show/hide", 24, 446, 70);
+    label("Show/hide", 24, 470, 70);
     let (items, sel) = keys(c.toggle_key);
-    combo(96, 444, 100, ID_TOGGLE, &items, sel);
-    label("Exit", 214, 446, 40);
+    combo(96, 468, 100, ID_TOGGLE, &items, sel);
+    label("Exit", 214, 470, 40);
     let (items, sel) = keys(c.exit_key);
-    combo(256, 444, 120, ID_EXIT, &items, sel);
+    combo(256, 468, 120, ID_EXIT, &items, sel);
 
     check(
         "Start with Windows",
         14,
-        488,
+        512,
         190,
         ID_AUTOSTART,
         crate::autostart::enabled(),
@@ -551,7 +556,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         WS_TABSTOP.0 | BS_DEFPUSHBUTTON,
         WINDOW_EX_STYLE(0),
         214,
-        486,
+        510,
         84,
         26,
         IDOK,
@@ -562,7 +567,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         WS_TABSTOP.0,
         WINDOW_EX_STYLE(0),
         306,
-        486,
+        510,
         84,
         26,
         IDCANCEL,
@@ -603,7 +608,7 @@ unsafe fn combo_value(hwnd: HWND, id: i32) -> usize {
 unsafe fn save(hwnd: HWND) {
     // SAFETY: reads our own controls.
     let (scale, opacity, min_fps, ignore, checks, layout, position, toggle, exit) = unsafe {
-        let mut checks = [false; 10];
+        let mut checks = [false; 11];
         for (i, c) in checks.iter_mut().enumerate() {
             *c = SendMessageW(item(hwnd, ID_CHECKS + i as i32), BM_GETCHECK, None, None).0 == 1;
         }
@@ -827,7 +832,7 @@ mod tests {
             min_fps: "30",
             ignore: " Foo.EXE ,, bar.exe",
             checks: [
-                true, true, false, true, true, false, true, false, true, true,
+                true, true, false, true, true, false, true, false, true, true, true,
             ],
             toggle_key: toggle,
             exit_key: exit,
@@ -844,6 +849,7 @@ mod tests {
         assert!(c.fps_only_background && c.show_fps && !c.show_cpu && c.show_cpu_clock);
         assert!(c.show_gpu);
         assert!(!c.show_gpu_clock && c.show_vram && !c.show_ram && c.show_process && c.fahrenheit);
+        assert!(c.fullscreen_only);
         assert_eq!((c.toggle_key, c.exit_key), (0x70, 0x7B));
         // Saved form must survive the ini round trip unchanged.
         assert_eq!(config::parse(&config::to_ini(&c)), c);

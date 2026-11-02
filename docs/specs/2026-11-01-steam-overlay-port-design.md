@@ -66,7 +66,7 @@ Driven by `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, …, WINEVENT_OUTOFCONTEXT)`
 - **Candidate** ⇔ pid ≠ own pid ∧ exe name (case-insensitive) not in `ignore`.
 - **Is game** ⇔ candidate ∧ this pid has produced at least one FPS sample ≥ `min_fps` since it became foreground (**sticky** for that foreground period; cleared on PID change). Loading screens / pauses therefore keep the overlay up.
 - FPS sample older than 2 s displays as `---` (no frozen values).
-- Overlay visible ⇔ is game ∧ `user_visible` (toggled by hotkey, default true). On PID change: FPS → `None`, sticky flag cleared, overlay hides until qualified again.
+- Overlay visible ⇔ is game ∧ `user_visible` (toggled by hotkey, default true) ∧ (¬`fullscreen_only` ∨ the foreground window's client area covers its whole monitor, checked each tick). On PID change: FPS → `None`, sticky flag cleared, overlay hides until qualified again.
 - UWP/`ApplicationFrameHost.exe` windows: out of scope (Win32 games only, same as original).
 
 ## Startup failure *(builder's call)*
@@ -112,6 +112,7 @@ Polled with `GetAsyncKeyState` on the in-game 100 ms timer (edge-triggered: act 
 | show_fps, show_cpu, show_cpu_clock, show_gpu, show_gpu_clock, show_vram, show_ram, show_process | 1 | 0/1 |
 | fahrenheit | 0 | 0/1 |
 | min_fps | 20 | 1–1000 |
+| fullscreen_only | 0 | 0/1 |
 | ignore | explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe | comma list |
 | toggle_key | 45 (VK_INSERT) | 1–254 |
 | exit_key | 35 (VK_END) | 1–254 |

@@ -20,8 +20,11 @@ use std::sync::atomic::{
     Ordering::{Acquire, Relaxed, Release},
 };
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    ClientToScreen, GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromWindow,
+};
 use windows::Win32::Security::{TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
@@ -41,16 +44,16 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CS_DBLCLKS, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW,
-    DefWindowProcW, DestroyMenu, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetCursorPos,
-    GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, HICON,
-    IDI_APPLICATION, IDYES, IMAGE_ICON, IsDialogMessageW, KillTimer, LR_DEFAULTCOLOR, LoadIconW,
-    LoadImageW, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MF_CHECKED, MF_SEPARATOR,
-    MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, SetForegroundWindow,
-    SetMenuDefaultItem, SetTimer, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-    WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE,
-    WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
-    WS_OVERLAPPED,
+    DefWindowProcW, DestroyMenu, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetClientRect,
+    GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId,
+    HICON, IDI_APPLICATION, IDYES, IMAGE_ICON, IsDialogMessageW, KillTimer, LR_DEFAULTCOLOR,
+    LoadIconW, LoadImageW, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MF_CHECKED,
+    MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, MessageBoxW, PostMessageW, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL,
+    SetForegroundWindow, SetMenuDefaultItem, SetTimer, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION,
+    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -396,7 +399,9 @@ impl App {
         if self.hotkeys() {
             return;
         }
-        if !self.visible {
+        // Hidden by toggle, or windowed while `fullscreen_only`: no poll, no draw.
+        if !self.visible || (self.cfg.fullscreen_only && !is_fullscreen(self.fg_hwnd)) {
+            self.hide();
             return;
         }
 
@@ -484,6 +489,46 @@ fn monitor_of(hwnd: HWND) -> (HMONITOR, u32) {
         let (mut x, mut y) = (96u32, 96u32);
         let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut x, &mut y);
         (mon, if x == 0 { 96 } else { x })
+    }
+}
+
+/// True when `client` (screen coords) covers all of `mon`. Exclusive and borderless
+/// fullscreen both pass; a maximized window fails because its title bar is outside
+/// the client area. ponytail: exact match; a borderless game that leaves a 1 px gap
+/// for the taskbar fails. Add a tolerance if one shows up.
+fn covers_monitor(client: RECT, mon: RECT) -> bool {
+    client.left <= mon.left
+        && client.top <= mon.top
+        && client.right >= mon.right
+        && client.bottom >= mon.bottom
+}
+
+fn is_fullscreen(hwnd: HWND) -> bool {
+    let mut c = RECT::default();
+    let mut mi = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: read-only queries with valid out-params; a stale hwnd just fails.
+    unsafe {
+        if GetClientRect(hwnd, &mut c).is_err() {
+            return false;
+        }
+        let mut tl = POINT {
+            x: c.left,
+            y: c.top,
+        };
+        if !ClientToScreen(hwnd, &mut tl).as_bool() {
+            return false;
+        }
+        let screen = RECT {
+            left: tl.x,
+            top: tl.y,
+            right: tl.x + c.right - c.left,
+            bottom: tl.y + c.bottom - c.top,
+        };
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        GetMonitorInfoW(mon, &mut mi).as_bool() && covers_monitor(screen, mi.rcMonitor)
     }
 }
 
@@ -901,5 +946,27 @@ mod tests {
         assert_eq!(ms_between(10_000_000, 5_000_000, 2_000_000), 300);
         assert_eq!(ms_between(10_000_000, 5_000_000, 0), 0); // 0 = "no sample"
         assert_eq!(ms_between(0, 10, 0), 0);
+    }
+
+    #[test]
+    fn fullscreen_means_client_covers_monitor() {
+        let r = |left, top, right, bottom| RECT {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        let mon = r(0, 0, 1920, 1080);
+        assert!(covers_monitor(r(0, 0, 1920, 1080), mon));
+        // Exclusive modes may report a client larger than the desktop rect.
+        assert!(covers_monitor(r(-1, -1, 1921, 1081), mon));
+        // Maximized windowed: title bar (~23 px) is outside the client area.
+        assert!(!covers_monitor(r(0, 23, 1920, 1032), mon));
+        // Borderless but 1 px short (taskbar trick) does not count.
+        assert!(!covers_monitor(r(0, 0, 1920, 1079), mon));
+        // Second monitor left of the primary, at negative coordinates.
+        let left = r(-2560, 0, 0, 1440);
+        assert!(covers_monitor(r(-2560, 0, 0, 1440), left));
+        assert!(!covers_monitor(r(0, 0, 1920, 1080), left));
     }
 }

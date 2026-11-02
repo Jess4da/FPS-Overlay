@@ -29,6 +29,8 @@ pub struct Config {
     pub show_process: bool,
     pub fahrenheit: bool,
     pub min_fps: f32,
+    /// Show only while the game's client area covers its whole monitor.
+    pub fullscreen_only: bool,
     pub ignore: Vec<String>,
     pub toggle_key: u8,
     pub exit_key: u8,
@@ -51,6 +53,7 @@ show_ram=1
 show_process=1
 fahrenheit=0
 min_fps=20
+fullscreen_only=0
 ignore=explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe
 toggle_key=45
 exit_key=35
@@ -74,6 +77,7 @@ impl Default for Config {
             show_process: true,
             fahrenheit: false,
             min_fps: 20.0,
+            fullscreen_only: false,
             ignore: [
                 "explorer.exe",
                 "dwm.exe",
@@ -156,8 +160,8 @@ pub fn to_ini(c: &Config) -> String {
     format!(
         "[Overlay]\nlayout={layout}\nfps_only_background={}\nposition={position}\nscale={}\n\
          background_opacity={}\nshow_fps={}\nshow_cpu={}\nshow_cpu_clock={}\nshow_gpu={}\nshow_gpu_clock={}\n\
-         show_vram={}\nshow_ram={}\nshow_process={}\nfahrenheit={}\nmin_fps={}\nignore={}\n\
-         toggle_key={}\nexit_key={}\n",
+         show_vram={}\nshow_ram={}\nshow_process={}\nfahrenheit={}\nmin_fps={}\nfullscreen_only={}\n\
+         ignore={}\ntoggle_key={}\nexit_key={}\n",
         b(c.fps_only_background),
         (c.scale * 100.0).round() as u32,
         (c.background_opacity * 100.0).round() as u32,
@@ -171,6 +175,7 @@ pub fn to_ini(c: &Config) -> String {
         b(c.show_process),
         b(c.fahrenheit),
         c.min_fps,
+        b(c.fullscreen_only),
         c.ignore.join(","),
         c.toggle_key,
         c.exit_key,
@@ -216,6 +221,7 @@ fn set(c: &mut Config, key: &str, val: &str) {
             Ok(n) if (1.0..=1000.0).contains(&n) => c.min_fps = n,
             _ => {}
         },
+        "fullscreen_only" => flag(&mut c.fullscreen_only, &v),
         "ignore" => c.ignore = ignore_list(&v),
         "toggle_key" => key_code(&v, &mut c.toggle_key),
         "exit_key" => key_code(&v, &mut c.exit_key),
@@ -275,6 +281,7 @@ mod tests {
             show_process: false,
             fahrenheit: true,
             min_fps: 30.0,
+            fullscreen_only: true,
             ignore: vec!["foo.exe".into(), "bar.exe".into()],
             toggle_key: 112,
             exit_key: 113,
