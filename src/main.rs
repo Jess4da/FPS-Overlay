@@ -455,7 +455,7 @@ impl App {
     /// fresh one; on failure keep the dead one so the caller retries later.
     fn restart_etw(&mut self) -> bool {
         // Before `start`: the new consumer then sees the target `apply` stores
-        // next as new, which resets its window and the stale `saw_pid`.
+        // next as new and resets its window (and `saw_pid`) on that pid's first event.
         self.target = 0;
         SHARED.target_pid.store(0, Release);
         let Ok(etw) = etw::Etw::start(&SHARED) else {
