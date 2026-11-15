@@ -128,14 +128,14 @@ holds only `fps-overlay.exe`, so `config.ini` and Start with Windows are kept.
 
 ```
 # bump version in Cargo.toml first, commit, then:
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.5.0 && git push origin v0.5.0
 ```
 
 ## Footprint
 
 Release build measured on this machine:
 
-- `fps-overlay.exe`: 516,608 bytes (~504 KB; budget 550 KB), no DLLs to ship.
+- `fps-overlay.exe`: 517,632 bytes (~506 KB; budget 550 KB), no DLLs to ship.
 - With `mute` empty (and no `muted.txt`), COM is never initialised, `ole32`,
   `wtsapi32` and the audio stack (`mmdevapi.dll`) are never loaded and no extra
   timer runs. With `mute` set, muting is event-driven (foreground change, audio

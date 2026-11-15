@@ -1,5 +1,7 @@
 # FPS Overlay (Rust) — Steam-like + FPS-Only — Design
 
+> **Superseded in part (2026-11-15, v0.5.0):** dependencies are now `windows` + `windows-core`; the exe budget is 550 KB; background muting, single-instance and ETW self-heal are added. See `2026-11-15-background-muter-design.md`. Everything else here still binds.
+
 ## Intent
 New Rust app (free redesign; the C++ code is a reference, not a structure to copy). Only requirement on looks: the bar output must match the original's **Steam-like** layout (`src/main.cpp:4270-4483`). Adds a second layout, **FPS-Only** (a lone FPS number in a corner, like NVIDIA's FPS overlay). Unlike the original (always topmost, global hotkeys), the overlay exists **only while a game is the foreground window**, and its hotkeys work **only in-game**. **Second main goal: as lightweight as possible** — tiny single exe, near-zero cost when no game is running, minimal cost while gaming (the overlay must never be the thing that costs the game frames).
 

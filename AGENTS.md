@@ -54,7 +54,7 @@ Background mute (only while App.mute is Some):
 | `src/` | The whole crate: flat modules, no `lib.rs`, declared at the top of `src/main.rs` |
 | `assets/icon.ico` | App/tray icon. Embedded as resource id **1** by `build.rs` |
 | `docs/specs/` | Binding design: GUIDs, event IDs, colours, thresholds, config keys |
-| `docs/plans/` | Historical implementation plan (done). Keep for reference; don't update it |
+| `docs/plans/` | Historical implementation plans (done). Keep for reference; don't update them |
 | `target/release/` | `fps-overlay.exe`. `config.ini` is written next to the exe at runtime |
 
 ## Development Commands
@@ -69,7 +69,7 @@ cargo clippy --release --all-targets -- -D warnings
 cargo fmt                                      # CI runs `cargo fmt --check`; format before committing
 
 # Release: bump `version` in Cargo.toml, commit, then push a matching semver tag
-git tag v0.2.0; git push origin v0.2.0
+git tag v0.5.0; git push origin v0.5.0
 ```
 
 - **Running the exe** triggers UAC; it relaunches itself elevated via `runas`. Declining exits silently. A second elevated instance exits silently (single-instance mutex).
@@ -160,5 +160,5 @@ git tag v0.2.0; git push origin v0.2.0
   6. Tray: double-click opens Settings, Save applies live, Cancel leaves `config.ini` unchanged, right-click → Exit.
 - **Docs to keep in sync:**
   - Any change to behaviour or config: update `README.md` (config table, hotkeys, layouts, footprint numbers).
-  - Binding-rule changes: update `docs/specs/…-design.md`.
-  - Known drift in the spec: tray, Settings window and the 10 s backoff are listed as non-goals or missing, but are implemented.
+  - Binding-rule changes: update the matching `docs/specs/…-design.md` (`2026-11-01-steam-overlay-port` for the overlay, `2026-11-15-background-muter` for muting, single instance and ETW self-heal).
+  - Known drift in the overlay spec: tray, Settings window and the 10 s backoff are listed as non-goals or missing, but are implemented.

@@ -48,14 +48,18 @@ New flat modules, declared in `src/main.rs`:
 - Settings: new `ID_MUTE` edit + `ID_ADD_MUTE` button under a "Background muting" group; `Fields` gains `mute: &str`; `from_fields` fills `cfg.mute` via the same list normalizer; picker reuses `candidates`/`collect` but excludes already-muted exes. Window grows to fit.
 - Config: `Config.mute: Vec<String>`, default empty, `mute=` written by `to_ini` (after `ignore`), parsed by `set` with `ignore_list`; `add_ignore` generalised or a twin `add_mute`. `DEFAULT_INI` gains `mute=`.
 
-## Autostart bug (fix after merge)
+## Autostart bug (fixed in v0.5.0)
 Symptom (user): logon start runs the exe, tray present, overlay never appears until Exit + manual relaunch.
-Evidence found during planning (`%TEMP%\fpsdbg.txt` from the stashed debug build): two interleaved `now=` streams with different start times — two instances running at once. There is no single-instance guard, and `Etw::start` stops any existing `FPSOverlayRs_ETW` session **by name** on `ERROR_ALREADY_EXISTS`, which kills the other live instance's session.
-Hypotheses to verify first (systematic-debugging, before any fix):
-1. Duplicate instances at logon (task + something else, or `StartWhenAvailable` firing twice), second start stopping the first's ETW session; the surviving tray belongs to the dead-session instance.
-2. Logon start runs before the desktop/DWM/display is ready, so the first overlay/DPI/monitor setup is wrong for the session.
-3. Task runs with `HighestAvailable` but the ETW realtime consumer dies at logon (ProcessTrace returns early) and is never restarted.
-Expected fix shape (decided after diagnosis): named mutex `Local\FpsOverlayRs` single-instance guard (second instance exits silently before touching ETW), plus whatever the diagnosis proves (e.g. restart the consumer when `ProcessTrace` returns while the app is alive, or a logon `<Delay>`). Regression test for any pure decision logic extracted.
+
+Root cause (from `%TEMP%\fpsdbg.txt`, a debug build's log of real runs): a second instance started while one was running. Its `Etw::start` got `ERROR_ALREADY_EXISTS` and stopped the `FPSOverlayRs_ETW` session **by name** — the first instance's live session. The first instance's `ProcessTrace` returned, its consumer thread exited, and its event count stayed frozen (795 events for 3+ minutes in the log) while the app kept running with its tray icon. Nothing restarted the session, so no game could qualify and the overlay never showed. Exit + relaunch created a fresh session, which is why that worked around it.
+
+Not proven: what starts the second instance at logon (logon task firing twice via `StartWhenAvailable`, another startup entry, or a manual launch), and whether anything else stops the session at logon. No elevated logon repro was possible.
+
+Fix:
+- **Single instance:** named mutex `Local\FpsOverlayRs`, taken only on the elevated path before `Etw::start`. A second instance exits silently. The handle lives for the process and is closed only right before `update::restart()`, so an updated exe can start.
+- **ETW self-heal:** each `Etw` has an `alive` flag (`Arc<AtomicBool>`) the consumer thread clears after `ProcessTrace` returns and the consumer is freed. `App::apply` (reached from every `foreground()`/`tick()`) sees `!is_alive()`, starts a new session on the UI thread, then drops the dead one (its `Drop` skips the by-handle stop). A failed restart keeps the dead `Etw` and retries on the next call. No new timer, no idle polling. Covers any session loss, not only a second instance.
+
+Accepted limits: a persistently failing restart retries on every `apply` (up to 10 Hz in game; a few syscalls each); a DXGI-enable failure that races a session stop before `alive` is cleared still takes the fatal error path.
 
 ## Constraints
 - AGENTS.md rules stay binding except the one-dependency rule (now `windows` + `windows-core`).
