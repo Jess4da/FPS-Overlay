@@ -89,6 +89,7 @@ game window.
 | `scale` | `100` | 50–200 (%) |
 | `background_opacity` | `100` | 0–100 (%) |
 | `show_fps`, `show_cpu`, `show_cpu_clock`, `show_gpu`, `show_gpu_clock`, `show_vram`, `show_ram`, `show_process` | `1` | `0`/`1` |
+| `show_low` | `0` | `0`/`1` (Steam-like bar: 1% low after FPS) |
 | `fahrenheit` | `0` | `0`/`1` |
 | `min_fps` | `20` | 1–1000; a foreground app below this is not treated as a game |
 | `fullscreen_only` | `0` | `0`/`1`; show only while the game covers its whole monitor (exclusive fullscreen or borderless). Detection still runs for windowed games, the overlay just stays hidden |

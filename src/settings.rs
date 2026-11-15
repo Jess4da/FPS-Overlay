@@ -65,9 +65,10 @@ const ID_MUTE: i32 = 130;
 const ID_ADD_MUTE: i32 = 131;
 /// Checkboxes, in `Fields::checks` order.
 const ID_CHECKS: i32 = 110;
-const CHECKS: [&str; 11] = [
+const CHECKS: [&str; 12] = [
     "Background in FPS-only layout",
     "FPS",
+    "1% low",
     "CPU usage",
     "CPU clock",
     "GPU usage / temp",
@@ -113,9 +114,9 @@ pub struct Fields<'a> {
     pub min_fps: &'a str,
     pub ignore: &'a str,
     pub mute: &'a str,
-    /// fps_only_background, fps, cpu, cpu_clock, gpu, gpu_clock, vram, ram, process,
+    /// fps_only_background, fps, low, cpu, cpu_clock, gpu, gpu_clock, vram, ram, process,
     /// fahrenheit, fullscreen_only
-    pub checks: [bool; 11],
+    pub checks: [bool; 12],
     pub toggle_key: u8,
     pub exit_key: u8,
 }
@@ -138,6 +139,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
     let [
         fps_bg,
         fps,
+        low,
         cpu,
         cpu_clock,
         gpu,
@@ -164,6 +166,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         scale: scale as f32 / 100.0,
         background_opacity: opacity as f32 / 100.0,
         show_fps: fps,
+        show_low: low,
         show_cpu: cpu,
         show_cpu_clock: cpu_clock,
         show_gpu: gpu,
@@ -477,6 +480,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
     group("Show in the Steam-like bar", 192, 124);
     let on = [
         c.show_fps,
+        c.show_low,
         c.show_cpu,
         c.show_cpu_clock,
         c.show_gpu,
@@ -522,7 +526,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         25,
         ID_ADD_IGNORE,
     );
-    check(CHECKS[10], 24, 418, 352, ID_CHECKS + 10, c.fullscreen_only);
+    check(CHECKS[11], 24, 418, 352, ID_CHECKS + 11, c.fullscreen_only);
 
     // Background muting
     group("Background muting", 448, 72);
@@ -634,7 +638,7 @@ unsafe fn combo_value(hwnd: HWND, id: i32) -> usize {
 unsafe fn save(hwnd: HWND) {
     // SAFETY: reads our own controls.
     let (scale, opacity, min_fps, ignore, mute, checks, layout, position, toggle, exit) = unsafe {
-        let mut checks = [false; 11];
+        let mut checks = [false; 12];
         for (i, c) in checks.iter_mut().enumerate() {
             *c = SendMessageW(item(hwnd, ID_CHECKS + i as i32), BM_GETCHECK, None, None).0 == 1;
         }
@@ -863,7 +867,7 @@ mod tests {
             ignore: " Foo.EXE ,, bar.exe",
             mute: " Game.EXE, ,x.exe",
             checks: [
-                true, true, false, true, true, false, true, false, true, true, true,
+                true, true, true, false, true, true, false, true, false, true, true, true,
             ],
             toggle_key: toggle,
             exit_key: exit,
@@ -877,7 +881,9 @@ mod tests {
         assert_eq!(c.position, Corner::BottomRight);
         assert_eq!((c.scale, c.background_opacity, c.min_fps), (1.5, 0.4, 30.0));
         assert_eq!(c.ignore, ["foo.exe", "bar.exe"]);
-        assert!(c.fps_only_background && c.show_fps && !c.show_cpu && c.show_cpu_clock);
+        assert!(
+            c.fps_only_background && c.show_fps && c.show_low && !c.show_cpu && c.show_cpu_clock
+        );
         assert!(c.show_gpu);
         assert!(!c.show_gpu_clock && c.show_vram && !c.show_ram && c.show_process && c.fahrenheit);
         assert!(c.fullscreen_only);
