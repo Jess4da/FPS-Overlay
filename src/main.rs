@@ -181,8 +181,9 @@ fn tray_menu(hwnd: HWND) {
                 }
             }
             ID_MUTE => {
-                if let Some((_, e)) = mute {
-                    toggle_mute(hwnd, &e);
+                // Act on what the label offered, not on state that may have changed.
+                if let Some((listed, e)) = mute {
+                    set_muted(hwnd, &e, !listed);
                 }
             }
             ID_AUTOSTART => {
@@ -208,15 +209,17 @@ fn ignore_exe(hwnd: HWND, exe: &str) {
     edit_config(hwnd, |cfg| config::add_to_list(&mut cfg.ignore, exe));
 }
 
-/// Tray "Mute X in background" / "Stop muting X": toggle `exe` in `mute`.
+/// Tray "Mute X in background" (`mute = true`) / "Stop muting X" (`false`):
+/// add or remove `exe` in `mute`; a no-op if it is already in that state.
 /// Same open-Settings ponytail as `ignore_exe`.
-fn toggle_mute(hwnd: HWND, exe: &str) {
+fn set_muted(hwnd: HWND, exe: &str, mute: bool) {
     edit_config(hwnd, |cfg| {
-        if cfg.mute.iter().any(|e| e == exe) {
-            cfg.mute.retain(|e| e != exe);
-            true
-        } else {
+        if mute {
             config::add_to_list(&mut cfg.mute, exe)
+        } else {
+            let n = cfg.mute.len();
+            cfg.mute.retain(|e| e != exe);
+            cfg.mute.len() != n
         }
     });
 }
@@ -1030,8 +1033,16 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             LRESULT(0)
         }
         WM_WTSSESSION_CHANGE => {
+            // Sent (not posted), so it can arrive while APP is borrowed: skip then;
+            // the next foreground change reconciles anyway.
             if wp.0 as u32 == WTS_SESSION_UNLOCK {
-                with_app(|app| app.mute_reconcile());
+                APP.with(|slot| {
+                    if let Ok(mut slot) = slot.try_borrow_mut()
+                        && let Some(app) = slot.as_mut()
+                    {
+                        app.mute_reconcile();
+                    }
+                });
             }
             LRESULT(0)
         }
@@ -1069,9 +1080,10 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
                 APP.with(|slot| {
                     if let Ok(mut slot) = slot.try_borrow_mut() {
                         shutdown(&mut slot);
+                        // Only once the mixer is gone; otherwise COM stays up.
+                        com_uninit();
                     }
                 });
-                com_uninit();
                 // SAFETY: posts to the message loop's thread.
                 unsafe { PostQuitMessage(0) };
             }
