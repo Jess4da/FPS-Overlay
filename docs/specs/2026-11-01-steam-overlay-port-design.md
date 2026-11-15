@@ -125,7 +125,7 @@ Missing file → defaults (and write a default file). Out-of-range or unparsable
 
 ## 1% low *(added 2026-11-15)*
 - **Definition:** 99th-percentile frame time (nearest rank: ascending index `ceil(0.99·n) − 1`) over the frames of the last **10 s**, shown as FPS = `freq / gap`. Fewer than **100** frames in the window → `None` (`---`).
-- **Frame time:** QPC delta between consecutive present events of the target pid, from one source only: the highest-priority source seen since the target became current (D3D9 > DXGI > kernel, same as counting). A higher-priority source appearing clears the history and takes over. Gaps > 2 s (pause/stall) are not recorded.
+- **Frame time:** QPC delta between consecutive present events of the target pid, from one source only: the highest-priority source seen since the target became current (D3D9 > DXGI > kernel, same as counting). A higher-priority source appearing clears the history and takes over. A lower source takes over (clearing the history) once the current one has been silent for > 2 s. Gaps > 2 s (pause/stall) are not recorded.
 - **Storage:** fixed ring of 4096 `u32` gaps + 4096 `u32` scratch, allocated once with the counter (never in the callback). *(ponytail: above ~400 fps the 4096-frame ring covers < 10 s; raise the capacity if that matters.)*
 - **Cost:** computed once per 1 s window (walk back ≤ 4096 gaps, copy, `select_nth_unstable`), always, regardless of `show_low` — a few µs/s, below the cost of a gate flag.
 - **Contract:** `Shared.low_bits` (f32 bits, `0` = none) is stored with `fps_bits`/`sample_pid`, before the `Release` store of `sample_qpc`. UI shows it only when the FPS sample itself is shown (same pid, fresh).

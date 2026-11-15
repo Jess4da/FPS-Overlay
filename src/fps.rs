@@ -41,8 +41,8 @@ pub struct FpsCounter {
     dxgi: u32,
     kernel: u32,
     saw_user_mode: bool,
-    /// Ring of present gaps in QPC ticks, newest at `head - 1`. `u32` is enough:
-    /// a recorded gap is at most 2 s, i.e. ≤ 2·10⁷ ticks at a 10 MHz QPC.
+    /// Ring of present gaps in QPC ticks, newest at `head - 1`. Only gaps that fit
+    /// a `u32` are recorded; above a ~2.1 GHz clock that drops the longest frames.
     gaps: Box<[u32]>,
     /// Selection scratch, so the 1% low never allocates in the callback.
     scratch: Box<[u32]>,
@@ -80,19 +80,25 @@ impl FpsCounter {
             self.reset(target, now);
         }
         // Frame times use one source only: the highest priority seen since the reset.
-        // A better source takes over with empty history; a worse one is ignored.
+        // A better source takes over with empty history. A worse one is ignored until
+        // the current one has been silent for 2 s, then it takes over with empty
+        // history too: a splash-screen source must not pin the 1% low at `---`.
         match self.low_src {
             Some(cur) if src.rank() == cur.rank() => {
                 let gap = now - self.last;
                 self.last = now;
-                // Pauses, stalls and clock jumps are not frame times.
-                if gap > 0 && gap <= 2 * self.freq {
-                    self.gaps[self.head] = gap as u32;
+                // Pauses, stalls and clock jumps are not frame times, and a gap
+                // that does not fit a `u32` is no frame time either.
+                if gap > 0
+                    && gap <= 2 * self.freq
+                    && let Ok(gap) = u32::try_from(gap)
+                {
+                    self.gaps[self.head] = gap;
                     self.head = (self.head + 1) % LOW_CAP;
                     self.len = (self.len + 1).min(LOW_CAP);
                 }
             }
-            Some(cur) if src.rank() < cur.rank() => {}
+            Some(cur) if src.rank() < cur.rank() && now - self.last <= 2 * self.freq => {}
             _ => {
                 self.low_src = Some(src);
                 self.head = 0;
@@ -405,6 +411,25 @@ mod tests {
     }
 
     #[test]
+    fn low_source_falls_back_after_2s() {
+        // A splash screen in D3D9 (10 ms) must not pin the 1% low once it goes
+        // silent: DXGI takes over after 2 s and only its own 5 ms gaps count.
+        let mut c = FpsCounter::new(1000);
+        let mut t = 0;
+        let mut last = None;
+        for _ in 0..150 {
+            last = c.on_present(1, 1, Source::D3d9, t).or(last);
+            t += 10;
+        }
+        // D3D9 stops; DXGI alone for 4 s covers the handover plus 100 gaps.
+        while t <= 5500 {
+            last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+            t += 5;
+        }
+        assert!(low_approx(last, 200.0), "got {last:?}");
+    }
+
+    #[test]
     fn low_ring_wraps() {
         let mut c = FpsCounter::new(1000);
         let mut last = None;
@@ -412,20 +437,36 @@ mod tests {
             last = c.on_present(1, 1, Source::Dxgi, i);
         }
         assert!(low_approx(last, 1000.0), "got {last:?}");
+        // 3 ms frames evict the 1 ms ones, so the ring ends up spanning > 10 s:
+        // the window must be the newest gaps, not the oldest.
+        let mut t = 6000;
+        for _ in 0..4100 {
+            t += 3;
+            last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+        }
+        assert!(low_approx(last, 333.3), "got {last:?}");
+        // 5 ms from here on, enough for a window to close.
+        for _ in 0..200 {
+            t += 5;
+            last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+        }
+        assert!(low_approx(last, 200.0), "got {last:?}");
     }
 
     #[test]
     fn low_ignores_pause_gap() {
+        // Two 3 s alt-tabs among ~140 gaps (the trailing pause is inert). Nearest
+        // rank leaves only 1% slack, so if the pauses were recorded p99 would be a
+        // pause (0.3 fps): the filter is what keeps them out.
         let mut c = FpsCounter::new(1000);
+        let mut t = 0;
         let mut last = None;
-        for i in 0..=200 {
-            last = c.on_present(1, 1, Source::Dxgi, 10 * i);
-        }
-        assert!(low_approx(last, 100.0), "got {last:?}");
-        // 4.5 s alt-tab: not a 0.2 fps frame.
-        assert_eq!(c.on_present(1, 1, Source::Dxgi, 6500).map(|s| s.fps), None);
-        for i in 1..=100 {
-            last = c.on_present(1, 1, Source::Dxgi, 6500 + 10 * i);
+        for run in [20, 20, 101] {
+            for _ in 0..run {
+                last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+                t += 10;
+            }
+            t += 3000;
         }
         assert!(low_approx(last, 100.0), "got {last:?}");
     }

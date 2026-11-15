@@ -40,7 +40,7 @@ Background mute (only while App.mute is Some):
   - **Game:** a candidate with a fresh sample ≥ `min_fps`. Qualification is sticky per foreground period.
   - **Timers:** `Probe` 250 ms → `Game` 100 ms → `SlowProbe` 1000 ms after 10 s without qualifying.
   - **Providers:** `Off`, `UserMode` (DXGI+D3D9), or `WithKernel`. DxgKrnl is added only after 1.5 s with no user-mode events (Vulkan/OpenGL fallback).
-- **FPS counting (`src/fps.rs`):** 1 s window, priority D3D9 > DXGI > kernel. Kernel-only counts only if ≥ 20 fps. Windows older than 2 s are dropped.
+- **FPS counting (`src/fps.rs`):** 1 s window, priority D3D9 > DXGI > kernel. Kernel-only counts only if ≥ 20 fps. Windows older than 2 s are dropped. Also keeps a 4096-gap ring of the top-priority source (a lower one takes over after 2 s of silence): nearest-rank p99 over the last 10 s, gaps > 2 s skipped, < 100 gaps ⇒ none.
 - **Mute (`src/mute.rs`, pure; `src/audio.rs`, WASAPI):** `Muter::reconcile(mixer, cfg.mute, fg_exe)` mutes listed sessions not in the foreground and only unmutes ones it muted (`owned`); lost ownership goes `stale` and is persisted in `muted.txt` beside the exe (crash recovery: release is `panic = "abort"`). `App.mute: Option<MuteState>` exists only while `mute_wanted(cfg.mute empty, persisted empty)`; COM is initialised lazily once (`com_init`) and uninitialised after `App` drops.
 - **Rendering (`src/render.rs`):** GDI only. Two DIBs, one with colour and one as a white-on-black coverage mask. `compose` produces premultiplied BGRA for `UpdateLayeredWindow(ULW_ALPHA)`. The window is `WS_EX_TOPMOST|LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW`: click-through and never focused.
 - **Self-heal:** each tick compares `GetForegroundWindow()` with `fg_hwnd` and re-runs `foreground()`, because WinEvents can be missed or coalesced.
@@ -61,7 +61,7 @@ Background mute (only while App.mute is Some):
 
 ```powershell
 cargo build --release                          # target\release\fps-overlay.exe
-cargo test                                     # all unit tests (107)
+cargo test                                     # all unit tests (108)
 cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process, autostart, update, mute)
 cargo test lists_live_sessions -- --ignored --nocapture  # real WASAPI session list (needs a playing app)
 cargo test poll_smoke -- --nocapture           # real PDH/DXGI/NVML poll, prints Sample + timing (~1.1 s)
@@ -120,7 +120,7 @@ git tag v0.5.0; git push origin v0.5.0
 |---|---|
 | `src/main.rs` | Entry point: DPI and elevation, `App`, `apply`/`tick`/`reconfigure`, tray, message loop, `main_wndproc` |
 | `src/etw.rs` | Raw ETW session `FPSOverlayRs_ETW`, provider enable/disable, consumer thread, `SHARED` |
-| `src/fps.rs` | `FpsCounter`: per-window FPS from present events |
+| `src/fps.rs` | `FpsCounter`: per-window FPS and 1% low from present events |
 | `src/gate.rs` | `GameGate`: candidate/game/backoff logic, timers and providers |
 | `src/layout.rs` | `Stats → Frame` (runs, colours, gaps) for both layouts. Exact values come from the spec |
 | `src/render.rs` | Layered GDI overlay, `compose`, placement, DPI |
