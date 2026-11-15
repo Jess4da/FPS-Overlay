@@ -5,7 +5,7 @@
 Windows-only, in-game FPS overlay written in Rust. It shows a Steam-like stats bar (`FPS | CPU | GPU | MHz | VRAM | RAM`, plus a process line) or a lone NVIDIA-style FPS counter, **only while a game is the foreground window**. FPS comes from ETW present events, with no injection and no hooks, so it is anti-cheat safe. It is a port of the `steam` layout from a C++/ImGui app (`D:\Coding\OtherCode\fps-overlay`), redesigned from scratch.
 
 The second main goal is to be **as lightweight as possible**. Budgets (spec "Goals"):
-- exe ≤ 500 KB
+- exe ≤ 550 KB
 - idle: 0 timers, 0 polling, ≤ 5 MB private bytes
 - in game: < 0.5% of one core, ≤ 10 MB (NVML excluded)
 - at most one redraw per second
@@ -14,9 +14,10 @@ Treat these as hard constraints when you change anything.
 
 ## Architecture & Data Flow
 
-There are exactly **two threads**:
-- **UI thread:** owns everything, including the message loop, `App`, the renderer, metrics and the settings window.
+There are exactly **two threads** of our own:
+- **UI thread:** owns everything, including the message loop, `App`, the renderer, metrics, the settings window and the audio mixer (COM STA).
 - **ETW consumer thread:** `src/etw.rs` runs `ProcessTrace`. Its callback writes **atomics only**: no allocation, no locks.
+- COM audio callbacks (`src/audio.rs` sinks) arrive on COM-owned threads and only `PostMessageW(MAIN_HWND, WM_AUDIO, NOTIFY_*)`. `MAIN_HWND` is cleared to 0 before `App` drops.
 
 ```
 WinEvent EVENT_SYSTEM_FOREGROUND ─► App::foreground ─► GameGate::on_foreground ─► App::apply
@@ -25,6 +26,12 @@ WM_TIMER ─► App::tick ─► read SHARED sample ─► GameGate::on_tick ─
                                               → layout::build → needs_draw? → Overlay::draw
 App::apply(GateOut): SHARED.target_pid, etw.set_providers, SetTimer/KillTimer, hide/idle trim
 Tray WM_TRAY: double-click → settings::open → Save → config::save + App::reconfigure (live)
+Background mute (only while App.mute is Some):
+  App::foreground ─► one-shot SetTimer(MUTE_TIMER_ID=2, 150 ms) ─► WM_TIMER ─► KillTimer + App::mute_reconcile
+  WM_AUDIO (WM_APP+3): NOTIFY_DEVICE → refresh_endpoints + reconcile; NOTIFY_SESSION → reconcile
+  WM_WTSSESSION_CHANGE / WTS_SESSION_UNLOCK → reconcile
+  reconfigure → mute_release (old list) → swap cfg → sync_mute (create/drop MuteState, reconcile)
+  every reconcile/release → muted.txt saved when Muter::persisted() changed
 ```
 
 - **ETW → UI contract (`etw::SHARED`):** the callback stores `fps_bits` and `sample_pid` Relaxed, then `sample_qpc` **Release**, last. Readers load `sample_qpc` **Acquire** first (0 means no sample). The UI thread writes only `target_pid`. `saw_pid` is per-pid evidence that a user-mode (DXGI/D3D9) event was seen.
@@ -34,6 +41,7 @@ Tray WM_TRAY: double-click → settings::open → Save → config::save + App::r
   - **Timers:** `Probe` 250 ms → `Game` 100 ms → `SlowProbe` 1000 ms after 10 s without qualifying.
   - **Providers:** `Off`, `UserMode` (DXGI+D3D9), or `WithKernel`. DxgKrnl is added only after 1.5 s with no user-mode events (Vulkan/OpenGL fallback).
 - **FPS counting (`src/fps.rs`):** 1 s window, priority D3D9 > DXGI > kernel. Kernel-only counts only if ≥ 20 fps. Windows older than 2 s are dropped.
+- **Mute (`src/mute.rs`, pure; `src/audio.rs`, WASAPI):** `Muter::reconcile(mixer, cfg.mute, fg_exe)` mutes listed sessions not in the foreground and only unmutes ones it muted (`owned`); lost ownership goes `stale` and is persisted in `muted.txt` beside the exe (crash recovery: release is `panic = "abort"`). `App.mute: Option<MuteState>` exists only while `mute_wanted(cfg.mute empty, persisted empty)`; COM is initialised lazily once (`com_init`) and uninitialised after `App` drops.
 - **Rendering (`src/render.rs`):** GDI only. Two DIBs, one with colour and one as a white-on-black coverage mask. `compose` produces premultiplied BGRA for `UpdateLayeredWindow(ULW_ALPHA)`. The window is `WS_EX_TOPMOST|LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW`: click-through and never focused.
 - **Self-heal:** each tick compares `GetForegroundWindow()` with `fg_hwnd` and re-runs `foreground()`, because WinEvents can be missed or coalesced.
 
@@ -41,7 +49,7 @@ Tray WM_TRAY: double-click → settings::open → Save → config::save + App::r
 
 | Path | Purpose |
 |---|---|
-| `src/` | The whole crate: flat modules, no `lib.rs`, declared in `src/main.rs:3-11` |
+| `src/` | The whole crate: flat modules, no `lib.rs`, declared at the top of `src/main.rs` |
 | `assets/icon.ico` | App/tray icon. Embedded as resource id **1** by `build.rs` |
 | `docs/specs/` | Binding design: GUIDs, event IDs, colours, thresholds, config keys |
 | `docs/plans/` | Historical implementation plan (done). Keep for reference; don't update it |
@@ -51,8 +59,9 @@ Tray WM_TRAY: double-click → settings::open → Save → config::save + App::r
 
 ```powershell
 cargo build --release                          # target\release\fps-overlay.exe
-cargo test                                     # all unit tests (72)
-cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process, autostart, update)
+cargo test                                     # all unit tests (94)
+cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process, autostart, update, mute)
+cargo test lists_live_sessions -- --ignored --nocapture  # real WASAPI session list (needs a playing app)
 cargo test poll_smoke -- --nocapture           # real PDH/DXGI/NVML poll, prints Sample + timing (~1.1 s)
 cargo clippy --release --all-targets -- -D warnings
 cargo fmt                                      # CI runs `cargo fmt --check`; format before committing
@@ -63,7 +72,7 @@ git tag v0.2.0; git push origin v0.2.0
 
 - **Running the exe** triggers UAC; it relaunches itself elevated via `runas`. Declining exits silently.
 - **Stuck ETW session after a crash:** `logman query -ets | findstr FPSOverlay`, then `logman stop FPSOverlayRs_ETW -ets` (both elevated). The app also clears a stale session on start.
-- **Checking size and imports:** `dumpbin /dependents target\release\fps-overlay.exe` should list system DLLs only, with `pdh.dll`, `dxgi.dll`, `version.dll` and `dwmapi.dll` under *delay load*.
+- **Checking size and imports:** `dumpbin /dependents target\release\fps-overlay.exe` should list system DLLs only, with `pdh.dll`, `dxgi.dll`, `version.dll`, `dwmapi.dll`, `ole32.dll` and `wtsapi32.dll` under *delay load*.
 
 ## Code Conventions & Common Patterns
 
@@ -88,7 +97,9 @@ git tag v0.2.0; git push origin v0.2.0
 - **Lightweight invariants:** don't break these.
   - The FPS-only layout must never call `metrics.poll()` or `process::label`, so the delay-loaded `pdh`/`dxgi`/`version`/`nvml` DLLs are never mapped.
   - `Metrics::new()` stays cheap.
-  - No timer while not a candidate.
+  - No timer while not a candidate. The only other timer is `MUTE_TIMER_ID`, a one-shot debounce armed only while `mute` is active.
+  - `mute` empty and no `muted.txt` ⇒ no COM init, no `WasapiMixer` (no `mmdevapi.dll`), no mute timer, no WTS registration.
+  - Every exit path (loop end: tray Exit, `End`, `WM_CLOSE`, update restart; `WM_ENDSESSION`) calls `shutdown`, which runs `drop_mute` (release + save `muted.txt`) before `App` drops.
   - Redraw only when `needs_draw(..)` is true (the `Frame` compares unequal).
   - On idle, call `release_buffers` and `SetProcessWorkingSetSize(-1,-1)`.
   - Hotkeys are polled with `GetAsyncKeyState`, edge-triggered, and armed only after the overlay appears. Never use `RegisterHotKey` or keyboard hooks.
@@ -113,17 +124,19 @@ git tag v0.2.0; git push origin v0.2.0
 | `src/render.rs` | Layered GDI overlay, `compose`, placement, DPI |
 | `src/metrics.rs` | CPU (`GetSystemTimes`), RAM, GPU %/VRAM (PDH, filtered by adapter LUID), VRAM total (DXGI), temp/MHz (NVML, NVIDIA only) |
 | `src/process.rs` | pid → lowercase exe name, `"Name.exe (FileDescription)"` label |
-| `src/config.rs` | `Config`, `DEFAULT_INI`, hand-written `parse`/`to_ini`/`load`/`save`. Bad values fall back per key |
+| `src/mute.rs` | Pure background-mute policy: `Session`, `trait Mixer`, `Muter` (owned/stale, `reconcile`, `release`, `persisted`) |
+| `src/audio.rs` | `WasapiMixer` (implements `Mixer`), endpoint/session notification sinks posting `WM_AUDIO` |
+| `src/config.rs` | `Config`, `DEFAULT_INI`, hand-written `parse`/`to_ini`/`load`/`save`. Bad values fall back per key. `load_owned`/`save_owned` for `muted.txt` |
 | `src/settings.rs` | Settings window (tray double-click): validates with `from_fields`, saves, applies live |
-| `build.rs` | `/DELAYLOAD` for pdh/dxgi/version/dwmapi, the Common Controls v6 manifest, and the icon via SDK `rc.exe` (if `rc.exe` isn't found, the build still succeeds with the stock icon) |
+| `build.rs` | `/DELAYLOAD` for pdh/dxgi/version/dwmapi/ole32/wtsapi32, the Common Controls v6 manifest, and the icon via SDK `rc.exe` (if `rc.exe` isn't found, the build still succeeds with the stock icon) |
 | `.cargo/config.toml` | `+crt-static` for `x86_64-pc-windows-msvc` only. Linker args belong in `build.rs` (`rustc-link-arg-bins`) so they don't apply to the build script |
 | `.github/workflows/ci.yml` | Push to `main` / PR: `fmt --check`, clippy `-D warnings`, tests, release build, exe uploaded as an artifact (windows-latest) |
 | `.github/workflows/release.yml` | Tag `vX.Y.Z[-pre]`: checks the tag is semver and equals `Cargo.toml` `version`, builds, publishes a GitHub Release with `fps-overlay-vX.Y.Z-x86_64-windows.zip` (only `fps-overlay.exe` at its root, so it extracts over an install) + `.sha256` (`-pre` tags become pre-releases) |
 
 ## Runtime/Tooling Preferences
 
-- **Target:** `x86_64-pc-windows-msvc` on Windows 10 1809+. Needs the MSVC toolchain, plus the Windows SDK for `rc.exe` (only for the icon). Edition 2024; no pinned toolchain.
-- **Exactly one dependency:** `windows = 0.62.2`. To use a new API namespace, add the feature to that same array in `Cargo.toml`.
+- **Target:** `x86_64-pc-windows-msvc` on Windows 10 1809+. Needs the MSVC toolchain, plus the Windows SDK for `rc.exe` (only for the icon). Rust 1.100+ (MSRV pinned via `rust-version` in `Cargo.toml`), edition 2024; no `rust-toolchain.toml`.
+- **Exactly two dependencies:** `windows = 0.62.2` and `windows-core = 0.62` (same release; needed for `#[implement]` COM sinks). To use a new API namespace, add the feature to the `windows` features array in `Cargo.toml`.
   - Don't add crates: no `rc`/`winres`, `serde`, INI, logging or GUI crates, and no dev-dependencies.
   - Don't add Direct2D, DirectWrite or a D3D device to the overlay.
 - **Release profile:** `opt-level="s"`, `lto="fat"`, `codegen-units=1`, `panic="abort"`, `strip=true`. There are no symbols, and the release build has no console (`windows_subsystem`), so use a debug build to diagnose.

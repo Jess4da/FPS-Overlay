@@ -18,7 +18,7 @@ RocketLeague.exe (Rocket League)
 - Two layouts, picked by `layout` in config: `steam` (default) and `fps-only`. In `fps-only`, CPU/GPU/RAM metrics are never polled and PDH/NVML/DXGI are never loaded.
 - `config.ini` next to the exe.
 - Lightweight budgets (verified in final smoke, release build):
-  - Single self-contained `.exe` (static CRT, no DLLs shipped), **≤ 500 KB**.
+  - Single self-contained `.exe` (static CRT, no DLLs shipped), **≤ 550 KB** (raised 2026-11-15 for background muting; was 500 KB).
   - Idle (no game foreground): **0 timers, 0 metric polling, 0 redraws**; CPU ≈ 0% in Task Manager; private bytes **≤ 5 MB**.
   - In game: CPU **< 0.5%** of one core averaged; private bytes **≤ 10 MB** (NVML may add its own; measured separately).
   - Redraw at most once per second (plus on show/move); no per-frame rendering, no swapchain, no GPU device.

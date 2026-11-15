@@ -40,6 +40,24 @@ A tray icon ("FPS Overlay") is always present:
 - **Ignoring an app** the overlay shouldn't show for: after it appears, right-click
   the tray → **Don't show for `name.exe`** (saved and applied at once). Or in
   Settings, **Add…** next to the ignore list picks from running apps with a window.
+- **Muting an app in the background:** right-click the tray → **Mute `name.exe`
+  in background** for the last app you had focused (not FPS Overlay itself, not
+  the taskbar); the item reads **Stop muting `name.exe`** once it is listed. Or
+  use the `mute` list in Settings (**Add…** picks from running apps). A listed
+  app is muted while it is not the foreground window and unmuted when you focus
+  it again. Unlisted apps are never touched, and it works without a game or the
+  overlay. Details:
+  - Only mutes FPS Overlay set are undone. An app you muted yourself in the
+    volume mixer stays muted, even when you focus it.
+  - Apps FPS Overlay currently keeps muted are written to `muted.txt` next to
+    the exe (deleted when empty). Exit, logoff/shutdown, an update restart and
+    removing an app from the list unmute them. If FPS Overlay crashes or is
+    killed, the next start reads `muted.txt` and re-adopts those mutes, so a
+    still-listed app is unmuted when you focus it. Remove an app from the list
+    only while FPS Overlay runs (or unmute it in the volume mixer), since an
+    unlisted app is never touched.
+  - Limits: apps using exclusive-mode audio have no mixer session to mute; UWP
+    apps show up as `ApplicationFrameHost.exe` and are not supported.
 - **Updates:** at each launch, a background thread asks GitHub for the latest
   release (one `curl.exe` request, then the thread exits). If it's newer, you get
   a Yes/No prompt. **Yes** downloads the release zip, swaps the exe (the old one
@@ -71,6 +89,7 @@ game window.
 | `min_fps` | `20` | 1–1000; a foreground app below this is not treated as a game |
 | `fullscreen_only` | `0` | `0`/`1`; show only while the game covers its whole monitor (exclusive fullscreen or borderless). Detection still runs for windowed games, the overlay just stays hidden |
 | `ignore` | `explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe` | comma-separated exe names |
+| `mute` | empty | comma-separated exe names to mute while not focused. Empty = no audio code runs at all |
 | `toggle_key` | `45` (Insert) | 1–254 (virtual-key code) |
 | `exit_key` | `35` (End) | 1–254 (virtual-key code) |
 
@@ -83,9 +102,11 @@ back to the default for that key.
 cargo build --release
 ```
 
-Single static-CRT exe, one dependency (`windows`). `pdh.dll`, `dxgi.dll`,
-`version.dll` and `dwmapi.dll` are delay-loaded, so the FPS-only layout never
-maps them.
+Single static-CRT exe, two crates (`windows`, `windows-core`, both from the
+same `windows-rs` release). `pdh.dll`, `dxgi.dll`, `version.dll` and
+`dwmapi.dll` are delay-loaded, so the FPS-only layout never maps them;
+`ole32.dll` and `wtsapi32.dll` are delay-loaded too, so they stay unmapped
+while `mute` is empty.
 
 ## CI and releases
 
@@ -110,6 +131,12 @@ git tag v0.2.0 && git push origin v0.2.0
 
 Release build measured on this machine:
 
-- `fps-overlay.exe`: ~347 KB, no DLLs to ship.
+- `fps-overlay.exe`: 516,608 bytes (~504 KB; budget 550 KB), no DLLs to ship.
+- With `mute` empty (and no `muted.txt`), COM is never initialised, `ole32`,
+  `wtsapi32` and the audio stack (`mmdevapi.dll`) are never loaded and no extra
+  timer runs. With `mute` set, muting is event-driven (foreground change, audio
+  session/device change, unlock) plus one 150 ms one-shot debounce per
+  foreground change.
 - Import table: system DLLs only (`kernel32`, `user32`, `gdi32`, `shell32`,
-  `advapi32`, `oleaut32`, `ntdll`).
+  `advapi32`, `combase`, `oleaut32`, `ntdll`); delay-loaded: `pdh`, `dxgi`,
+  `version`, `dwmapi`, `ole32`, `wtsapi32`.
