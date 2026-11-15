@@ -95,6 +95,7 @@ Polled with `GetAsyncKeyState` on the in-game 100 ms timer (edge-triggered: act 
   - MHz values (CPU and GPU) (0.70,0.70,0.75). Process line (0.42,0.52,0.42) at 0.78 × font size.
 - Groups in order, each enabled by config, separated by `" | "` only between drawn groups:
   1. `FPS` `180` (`%.0f`; `---` when `None`)
+  1b. `1%` `98` — 1% low, only when `show_low=1` (see *1% low*); label color = FPS label, value color = FPS tiers, `---` when `None`
   2. `CPU` `15%`
   3. `5545 MHz` CPU clock (own group, only when Some)
   4. `GPU` `25%` ` 54°C` (temp omitted when `None`; `N/A` when GPU% `None`)
@@ -112,6 +113,7 @@ Polled with `GetAsyncKeyState` on the in-game 100 ms timer (edge-triggered: act 
 | scale | 100 | 50–200 (%) |
 | background_opacity | 100 | 0–100 |
 | show_fps, show_cpu, show_cpu_clock, show_gpu, show_gpu_clock, show_vram, show_ram, show_process | 1 | 0/1 |
+| show_low | 0 | 0/1 (Steam-like only: 1% low group) |
 | fahrenheit | 0 | 0/1 |
 | min_fps | 20 | 1–1000 |
 | fullscreen_only | 0 | 0/1 |
@@ -120,6 +122,14 @@ Polled with `GetAsyncKeyState` on the in-game 100 ms timer (edge-triggered: act 
 | exit_key | 35 (VK_END) | 1–254 |
 
 Missing file → defaults (and write a default file). Out-of-range or unparsable value → default for that key.
+
+## 1% low *(added 2026-11-15)*
+- **Definition:** 99th-percentile frame time (nearest rank: ascending index `ceil(0.99·n) − 1`) over the frames of the last **10 s**, shown as FPS = `freq / gap`. Fewer than **100** frames in the window → `None` (`---`).
+- **Frame time:** QPC delta between consecutive present events of the target pid, from one source only: the highest-priority source seen since the target became current (D3D9 > DXGI > kernel, same as counting). A higher-priority source appearing clears the history and takes over. Gaps > 2 s (pause/stall) are not recorded.
+- **Storage:** fixed ring of 4096 `u32` gaps + 4096 `u32` scratch, allocated once with the counter (never in the callback). *(ponytail: above ~400 fps the 4096-frame ring covers < 10 s; raise the capacity if that matters.)*
+- **Cost:** computed once per 1 s window (walk back ≤ 4096 gaps, copy, `select_nth_unstable`), always, regardless of `show_low` — a few µs/s, below the cost of a gate flag.
+- **Contract:** `Shared.low_bits` (f32 bits, `0` = none) is stored with `fps_bits`/`sample_pid`, before the `Release` store of `sample_qpc`. UI shows it only when the FPS sample itself is shown (same pid, fresh).
+- **FPS-Only layout:** never shows 1% low.
 
 ## Layout: FPS-Only *(builder's call on look, modeled on NVIDIA's FPS counter)*
 - One run: the FPS number only (`%.0f`, `---` when `None`). No label, no process line.
