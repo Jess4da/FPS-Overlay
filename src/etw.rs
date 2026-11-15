@@ -2,7 +2,10 @@
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering::Relaxed, Ordering::Release};
+use std::sync::Arc;
+use std::sync::atomic::{
+    AtomicBool, AtomicI64, AtomicU32, Ordering::Acquire, Ordering::Relaxed, Ordering::Release,
+};
 use std::thread::JoinHandle;
 
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS, WIN32_ERROR};
@@ -78,6 +81,9 @@ pub struct Etw {
     log: PROCESSTRACE_HANDLE,
     thread: Option<JoinHandle<()>>,
     providers: Providers,
+    /// Cleared by the consumer thread when `ProcessTrace` returns: the session
+    /// was stopped (e.g. `logman stop`) or lost, and no event will ever arrive.
+    alive: Arc<AtomicBool>,
 }
 
 /// Owned by the consumer thread, reached from the callback through `UserContext`.
@@ -186,6 +192,8 @@ impl Etw {
         }
 
         let consumer_addr = consumer as usize; // raw pointers are not Send
+        let alive = Arc::new(AtomicBool::new(true));
+        let thread_alive = alive.clone();
         let thread = std::thread::spawn(move || {
             // SAFETY: one realtime handle; returns when the session is stopped/closed.
             unsafe {
@@ -193,6 +201,7 @@ impl Etw {
             }
             // SAFETY: the trace is finished, so no callback can reach the consumer again.
             drop(unsafe { Box::from_raw(consumer_addr as *mut Consumer) });
+            thread_alive.store(false, Release);
         });
 
         Ok(Etw {
@@ -200,7 +209,14 @@ impl Etw {
             log,
             thread: Some(thread),
             providers: Providers::Off,
+            alive,
         })
+    }
+
+    /// False once the consumer thread has ended. The owner then drops this
+    /// `Etw` and starts a new one, on the UI thread.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Acquire)
     }
 
     /// Idempotent; DXGI failure is fatal, D3D9/DxgKrnl failures are ignored.
@@ -297,10 +313,14 @@ impl Etw {
 
 impl Drop for Etw {
     fn drop(&mut self) {
-        // SAFETY: stopping by our own handle cannot hit an unrelated session.
-        unsafe {
-            let mut p = SessionProps::new();
-            let _ = ControlTraceW(self.session, None, &mut p.props, EVENT_TRACE_CONTROL_STOP);
+        // A dead consumer means the session is already gone, and its logger id
+        // may since belong to another session: only stop a live one.
+        if self.is_alive() {
+            // SAFETY: stopping by our own live handle cannot hit an unrelated session.
+            unsafe {
+                let mut p = SessionProps::new();
+                let _ = ControlTraceW(self.session, None, &mut p.props, EVENT_TRACE_CONTROL_STOP);
+            }
         }
         // SAFETY: closes the processing handle we opened.
         unsafe {

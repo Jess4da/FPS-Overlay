@@ -24,7 +24,7 @@ WinEvent EVENT_SYSTEM_FOREGROUND ─► App::foreground ─► GameGate::on_fore
 WM_TIMER ─► App::tick ─► read SHARED sample ─► GameGate::on_tick ─► App::apply
                        └─ if game && visible: hotkeys → (Steam only) metrics.poll 1 Hz
                                               → layout::build → needs_draw? → Overlay::draw
-App::apply(GateOut): SHARED.target_pid, etw.set_providers, SetTimer/KillTimer, hide/idle trim
+App::apply(GateOut): etw dead? → restart_etw, SHARED.target_pid, etw.set_providers, SetTimer/KillTimer, hide/idle trim
 Tray WM_TRAY: double-click → settings::open → Save → config::save + App::reconfigure (live)
 Background mute (only while App.mute is Some):
   App::foreground ─► one-shot SetTimer(MUTE_TIMER_ID=2, 150 ms) ─► WM_TIMER ─► KillTimer + App::mute_reconcile
@@ -44,6 +44,8 @@ Background mute (only while App.mute is Some):
 - **Mute (`src/mute.rs`, pure; `src/audio.rs`, WASAPI):** `Muter::reconcile(mixer, cfg.mute, fg_exe)` mutes listed sessions not in the foreground and only unmutes ones it muted (`owned`); lost ownership goes `stale` and is persisted in `muted.txt` beside the exe (crash recovery: release is `panic = "abort"`). `App.mute: Option<MuteState>` exists only while `mute_wanted(cfg.mute empty, persisted empty)`; COM is initialised lazily once (`com_init`) and uninitialised after `App` drops.
 - **Rendering (`src/render.rs`):** GDI only. Two DIBs, one with colour and one as a white-on-black coverage mask. `compose` produces premultiplied BGRA for `UpdateLayeredWindow(ULW_ALPHA)`. The window is `WS_EX_TOPMOST|LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW`: click-through and never focused.
 - **Self-heal:** each tick compares `GetForegroundWindow()` with `fg_hwnd` and re-runs `foreground()`, because WinEvents can be missed or coalesced.
+- **ETW self-heal:** the consumer thread clears `Etw::is_alive()` when `ProcessTrace` returns (session stopped by name, `logman stop`, session loss). `App::apply` (reached from every `foreground()`/`tick()`) then calls `restart_etw` on the UI thread: reset `target`, `Etw::start` anew, drop the dead one (its `Drop` skips the stop and joins a finished thread). A failed restart keeps the dead `Etw` and retries on the next call; never restart from the ETW thread and never add a timer for it.
+- **Single instance:** named mutex `Local\FpsOverlayRs`, created in `main()` only on the elevated path, before `Etw::start` (whose `ERROR_ALREADY_EXISTS` path stops the session *by name*, which would kill a running instance's session). A second instance returns silently. The handle lives for the process; it is closed only right before `update::restart()`.
 
 ## Key Directories
 
@@ -70,8 +72,8 @@ cargo fmt                                      # CI runs `cargo fmt --check`; fo
 git tag v0.2.0; git push origin v0.2.0
 ```
 
-- **Running the exe** triggers UAC; it relaunches itself elevated via `runas`. Declining exits silently.
-- **Stuck ETW session after a crash:** `logman query -ets | findstr FPSOverlay`, then `logman stop FPSOverlayRs_ETW -ets` (both elevated). The app also clears a stale session on start.
+- **Running the exe** triggers UAC; it relaunches itself elevated via `runas`. Declining exits silently. A second elevated instance exits silently (single-instance mutex).
+- **Stuck ETW session after a crash:** `logman query -ets | findstr FPSOverlay`, then `logman stop FPSOverlayRs_ETW -ets` (both elevated). The app clears a stale session on start, and a running instance restarts its session within one tick/focus change if it is stopped externally.
 - **Checking size and imports:** `dumpbin /dependents target\release\fps-overlay.exe` should list system DLLs only, with `pdh.dll`, `dxgi.dll`, `version.dll`, `dwmapi.dll`, `ole32.dll` and `wtsapi32.dll` under *delay load*.
 
 ## Code Conventions & Common Patterns

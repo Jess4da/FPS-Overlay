@@ -24,7 +24,8 @@ use std::sync::atomic::{
 };
 
 use windows::Win32::Foundation::{
-    CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, RPC_E_CHANGED_MODE, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
+    RPC_E_CHANGED_MODE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
@@ -38,8 +39,8 @@ use windows::Win32::System::RemoteDesktop::{
     NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
 };
 use windows::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, OpenProcessToken, SetPriorityClass,
-    SetProcessWorkingSetSize,
+    BELOW_NORMAL_PRIORITY_CLASS, CreateMutexW, GetCurrentProcess, OpenProcessToken,
+    SetPriorityClass, SetProcessWorkingSetSize,
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows::Win32::UI::HiDpi::{
@@ -396,6 +397,9 @@ impl App {
     }
 
     fn apply(&mut self, out: GateOut) {
+        // Self-heal before touching providers: enabling on a dead session would
+        // be reported as fatal. A failed restart retries on the next call.
+        let live = self.etw.is_alive() || self.restart_etw();
         let target = if out.providers == Providers::Off {
             0
         } else {
@@ -405,8 +409,12 @@ impl App {
             self.target = target;
             SHARED.target_pid.store(target, Release);
         }
-        // Idempotent: a no-op unless the provider set actually changed.
-        if let Err(e) = self.etw.set_providers(out.providers) {
+        // Idempotent: a no-op unless the provider set actually changed. A session
+        // that died meanwhile is not fatal: the next call restarts it.
+        if live
+            && let Err(e) = self.etw.set_providers(out.providers)
+            && self.etw.is_alive()
+        {
             // Only a DXGI enable failure gets here (D3D9/DxgKrnl are tolerated
             // inside set_providers). The spec wants a message box and exit, but
             // showing it from inside a tick would pump messages under the App
@@ -440,6 +448,23 @@ impl App {
         if !out.visible {
             self.hide();
         }
+    }
+
+    /// The ETW session ended under us (another process stopped it by name,
+    /// `logman stop`, session loss) and the consumer thread exited. Start a
+    /// fresh one; on failure keep the dead one so the caller retries later.
+    fn restart_etw(&mut self) -> bool {
+        // Before `start`: the new consumer then sees the target `apply` stores
+        // next as new, which resets its window and the stale `saw_pid`.
+        self.target = 0;
+        SHARED.target_pid.store(0, Release);
+        let Ok(etw) = etw::Etw::start(&SHARED) else {
+            return false;
+        };
+        // Drops the dead one: no stop (already gone), CloseTrace, join a finished thread.
+        // The new session starts with providers off, so `apply` re-enables them.
+        self.etw = etw;
+        true
     }
 
     fn hide(&mut self) {
@@ -850,6 +875,16 @@ fn main() {
     }
 
     update::cleanup();
+    // Single instance: a second one's `Etw::start` would stop our live session
+    // by name. Only the elevated process gets here, so the relaunching
+    // non-elevated one never holds it. If creation itself fails, run anyway.
+    // SAFETY: plain named-mutex creation; the handle stays open for the process
+    // lifetime and is closed only before an update restart.
+    let instance = unsafe { CreateMutexW(None, false, w!("Local\\FpsOverlayRs")) };
+    // SAFETY: reads this thread's last error, set by CreateMutexW just above.
+    if instance.is_ok() && unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        return;
+    }
     let cfg = config::load();
     let etw = match etw::Etw::start(&SHARED) {
         Ok(e) => e,
@@ -977,6 +1012,13 @@ fn main() {
         show_error(&format!("DXGI provider failed: 0x{code:08X}"));
     }
     if RESTART.load(Relaxed) {
+        // Release the instance mutex first, or the new exe would exit at once.
+        if let Ok(h) = instance {
+            // SAFETY: our own handle from CreateMutexW, closed once.
+            unsafe {
+                let _ = CloseHandle(h);
+            }
+        }
         update::restart();
     }
 }
