@@ -60,6 +60,9 @@ const ID_EXIT: i32 = 107;
 /// Not in `CHECKS`: state lives in Task Scheduler, not `Config`.
 const ID_AUTOSTART: i32 = 108;
 const ID_ADD_IGNORE: i32 = 109;
+/// Background muting: the exe list and its "Add…" button.
+const ID_MUTE: i32 = 130;
+const ID_ADD_MUTE: i32 = 131;
 /// Checkboxes, in `Fields::checks` order.
 const ID_CHECKS: i32 = 110;
 const CHECKS: [&str; 11] = [
@@ -109,6 +112,7 @@ pub struct Fields<'a> {
     pub opacity: &'a str,
     pub min_fps: &'a str,
     pub ignore: &'a str,
+    pub mute: &'a str,
     /// fps_only_background, fps, cpu, cpu_clock, gpu, gpu_clock, vram, ram, process,
     /// fahrenheit, fullscreen_only
     pub checks: [bool; 11],
@@ -171,9 +175,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         min_fps: min_fps as f32,
         fullscreen_only,
         ignore: config::ignore_list(f.ignore),
-        // ponytail: the Settings window has no mute box yet; Task 4 turns this
-        // into a field, until then Save drops a hand-edited `mute=`.
-        mute: Vec::new(),
+        mute: config::ignore_list(f.mute),
         toggle_key: f.toggle_key,
         exit_key: f.exit_key,
     })
@@ -232,7 +234,7 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
 
         let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         let ex = WS_EX_CONTROLPARENT;
-        let (cw, ch) = (px(400), px(542));
+        let (cw, ch) = (px(400), px(622));
         let mut r = RECT {
             left: 0,
             top: 0,
@@ -522,8 +524,29 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
     );
     check(CHECKS[10], 24, 418, 352, ID_CHECKS + 10, c.fullscreen_only);
 
+    // Background muting
+    group("Background muting", 448, 72);
+    label(
+        "Mute while not focused (exe names, comma separated)",
+        24,
+        470,
+        340,
+    );
+    edit(&c.mute.join(", "), 24, 488, 268, ID_MUTE, false);
+    ctl(
+        w!("BUTTON"),
+        "Add…",
+        WS_TABSTOP.0,
+        WINDOW_EX_STYLE(0),
+        298,
+        487,
+        78,
+        25,
+        ID_ADD_MUTE,
+    );
+
     // Hotkeys (in game only)
-    group("Hotkeys (work only while a game is in front)", 448, 54);
+    group("Hotkeys (work only while a game is in front)", 528, 54);
     let keys = |cur: u8| {
         let mut items: Vec<(String, usize)> = KEYS
             .iter()
@@ -538,17 +561,17 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
             .unwrap_or(0);
         (items, sel)
     };
-    label("Show/hide", 24, 470, 70);
+    label("Show/hide", 24, 550, 70);
     let (items, sel) = keys(c.toggle_key);
-    combo(96, 468, 100, ID_TOGGLE, &items, sel);
-    label("Exit", 214, 470, 40);
+    combo(96, 548, 100, ID_TOGGLE, &items, sel);
+    label("Exit", 214, 550, 40);
     let (items, sel) = keys(c.exit_key);
-    combo(256, 468, 120, ID_EXIT, &items, sel);
+    combo(256, 548, 120, ID_EXIT, &items, sel);
 
     check(
         "Start with Windows",
         14,
-        512,
+        592,
         190,
         ID_AUTOSTART,
         crate::autostart::enabled(),
@@ -559,7 +582,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         WS_TABSTOP.0 | BS_DEFPUSHBUTTON,
         WINDOW_EX_STYLE(0),
         214,
-        510,
+        590,
         84,
         26,
         IDOK,
@@ -570,7 +593,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         WS_TABSTOP.0,
         WINDOW_EX_STYLE(0),
         306,
-        510,
+        590,
         84,
         26,
         IDCANCEL,
@@ -610,7 +633,7 @@ unsafe fn combo_value(hwnd: HWND, id: i32) -> usize {
 
 unsafe fn save(hwnd: HWND) {
     // SAFETY: reads our own controls.
-    let (scale, opacity, min_fps, ignore, checks, layout, position, toggle, exit) = unsafe {
+    let (scale, opacity, min_fps, ignore, mute, checks, layout, position, toggle, exit) = unsafe {
         let mut checks = [false; 11];
         for (i, c) in checks.iter_mut().enumerate() {
             *c = SendMessageW(item(hwnd, ID_CHECKS + i as i32), BM_GETCHECK, None, None).0 == 1;
@@ -620,6 +643,7 @@ unsafe fn save(hwnd: HWND) {
             text(hwnd, ID_OPACITY),
             text(hwnd, ID_MIN_FPS),
             text(hwnd, ID_IGNORE),
+            text(hwnd, ID_MUTE),
             checks,
             combo_value(hwnd, ID_LAYOUT),
             combo_value(hwnd, ID_POSITION),
@@ -634,6 +658,7 @@ unsafe fn save(hwnd: HWND) {
         opacity: &opacity,
         min_fps: &min_fps,
         ignore: &ignore,
+        mute: &mute,
         checks,
         toggle_key: toggle,
         exit_key: exit,
@@ -685,12 +710,12 @@ fn message(hwnd: HWND, text: &str, icon: MESSAGEBOX_STYLE) {
     }
 }
 
-/// Running windowed apps not yet ignored, as `(exe, label)`, sorted by label, one
-/// per exe. Input is one `(exe, label)` per top-level window.
-fn candidates(windows: Vec<(String, String)>, ignored: &[String]) -> Vec<(String, String)> {
+/// Running windowed apps not yet in the list, as `(exe, label)`, sorted by label,
+/// one per exe. Input is one `(exe, label)` per top-level window.
+fn candidates(windows: Vec<(String, String)>, excluded: &[String]) -> Vec<(String, String)> {
     let mut v: Vec<_> = windows
         .into_iter()
-        .filter(|(e, _)| !ignored.contains(e))
+        .filter(|(e, _)| !excluded.contains(e))
         .collect();
     v.sort_by(|a, b| a.0.cmp(&b.0));
     v.dedup_by(|a, b| a.0 == b.0);
@@ -732,14 +757,15 @@ unsafe extern "system" fn collect(hwnd: HWND, lp: LPARAM) -> BOOL {
     true.into()
 }
 
-/// "Add…": popup menu of running windowed apps; the pick is appended to the
-/// ignore box (applied on Save like any other edit).
-unsafe fn pick_ignore(hwnd: HWND) {
+/// "Add…" for a comma list box: popup menu of running windowed apps not already
+/// listed in `edit_id`; the pick is appended to that box (applied on Save like
+/// any other edit). `button_id` anchors the menu.
+unsafe fn pick_into(hwnd: HWND, edit_id: i32, button_id: i32) {
     let mut found: Vec<(String, String)> = Vec::new();
     // SAFETY: callback only runs during this call, while `found` is alive.
     let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut found as *mut _ as isize)) };
     // SAFETY: reads our own edit box.
-    let current = unsafe { text(hwnd, ID_IGNORE) };
+    let current = unsafe { text(hwnd, edit_id) };
     let mut list = config::ignore_list(&current);
     let items = candidates(found, &list);
     if items.is_empty() {
@@ -758,7 +784,7 @@ unsafe fn pick_ignore(hwnd: HWND) {
             let _ = AppendMenuW(menu, MF_STRING, i + 1, PCWSTR(l.as_ptr()));
         }
         let mut r = RECT::default();
-        let _ = GetWindowRect(item(hwnd, ID_ADD_IGNORE), &mut r);
+        let _ = GetWindowRect(item(hwnd, button_id), &mut r);
         let cmd = TrackPopupMenu(
             menu,
             TPM_RETURNCMD | TPM_RIGHTALIGN,
@@ -778,7 +804,7 @@ unsafe fn pick_ignore(hwnd: HWND) {
     let t = crate::wide(&list.join(", "));
     // SAFETY: our edit box; buffer outlives the call.
     unsafe {
-        let _ = SetWindowTextW(item(hwnd, ID_IGNORE), PCWSTR(t.as_ptr()));
+        let _ = SetWindowTextW(item(hwnd, edit_id), PCWSTR(t.as_ptr()));
     }
 }
 
@@ -791,7 +817,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 IDCANCEL => unsafe {
                     let _ = DestroyWindow(hwnd);
                 },
-                ID_ADD_IGNORE => unsafe { pick_ignore(hwnd) },
+                ID_ADD_IGNORE => unsafe { pick_into(hwnd, ID_IGNORE, ID_ADD_IGNORE) },
+                ID_ADD_MUTE => unsafe { pick_into(hwnd, ID_MUTE, ID_ADD_MUTE) },
                 _ => {}
             }
             LRESULT(0)
@@ -834,6 +861,7 @@ mod tests {
             opacity: "40",
             min_fps: "30",
             ignore: " Foo.EXE ,, bar.exe",
+            mute: " Game.EXE, ,x.exe",
             checks: [
                 true, true, false, true, true, false, true, false, true, true, true,
             ],
@@ -856,6 +884,12 @@ mod tests {
         assert_eq!((c.toggle_key, c.exit_key), (0x70, 0x7B));
         // Saved form must survive the ini round trip unchanged.
         assert_eq!(config::parse(&config::to_ini(&c)), c);
+    }
+
+    #[test]
+    fn from_fields_normalizes_mute_list() {
+        let c = from_fields(&fields("100", 0x70, 0x7B)).unwrap();
+        assert_eq!(c.mute, ["game.exe", "x.exe"]);
     }
 
     #[test]
