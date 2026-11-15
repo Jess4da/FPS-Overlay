@@ -184,7 +184,7 @@ fn ignore_exe(hwnd: HWND, exe: &str) {
     let mut cfg = None;
     with_app(|app| cfg = Some(app.cfg.clone()));
     let Some(mut cfg) = cfg else { return };
-    if !config::add_ignore(&mut cfg.ignore, exe) {
+    if !config::add_to_list(&mut cfg.ignore, exe) {
         return;
     }
     if let Err(e) = config::save(&cfg) {

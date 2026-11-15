@@ -1,3 +1,6 @@
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Corner {
     TopLeft,
@@ -32,6 +35,8 @@ pub struct Config {
     /// Show only while the game's client area covers its whole monitor.
     pub fullscreen_only: bool,
     pub ignore: Vec<String>,
+    /// Processes background-muted by this app; written back on exit.
+    pub mute: Vec<String>,
     pub toggle_key: u8,
     pub exit_key: u8,
 }
@@ -55,6 +60,7 @@ fahrenheit=0
 min_fps=20
 fullscreen_only=0
 ignore=explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe
+mute=
 toggle_key=45
 exit_key=35
 ";
@@ -88,6 +94,7 @@ impl Default for Config {
             ]
             .map(String::from)
             .to_vec(),
+            mute: Vec::new(),
             toggle_key: 45,
             exit_key: 35,
         }
@@ -118,10 +125,68 @@ pub fn parse(ini: &str) -> Config {
     c
 }
 
-fn path() -> Option<std::path::PathBuf> {
+fn path() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("config.ini")))
+}
+
+// The whole `muted.txt` block below is test-only until Task 5 wires it into the
+// app; then every `allow(dead_code)` here goes away.
+
+/// `muted.txt` beside the exe: exes this app muted and must unmute on exit.
+#[allow(dead_code)]
+fn owned_path() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("muted.txt")))
+}
+
+/// One exe per line. Missing or unreadable reads as empty: a session must not
+/// fail over this file.
+#[allow(dead_code)]
+fn load_owned_from(p: &Path) -> Vec<String> {
+    std::fs::read_to_string(p)
+        .map(|t| {
+            t.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// An empty set removes the file (nothing was muted); NotFound is success.
+/// Otherwise the temp file goes in the same directory and is renamed over the
+/// real one, so a crash can't leave half a list.
+#[allow(dead_code)]
+fn save_owned_to(p: &Path, exes: &BTreeSet<String>) -> std::io::Result<()> {
+    if exes.is_empty() {
+        return match std::fs::remove_file(p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    let text: String = exes.iter().map(|e| format!("{e}\n")).collect();
+    let mut tmp = p.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, p)
+}
+
+#[allow(dead_code)]
+pub fn load_owned() -> Vec<String> {
+    owned_path()
+        .map(|p| load_owned_from(&p))
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+pub fn save_owned(exes: &BTreeSet<String>) -> std::io::Result<()> {
+    let p = owned_path().ok_or_else(|| std::io::Error::other("no exe directory"))?;
+    save_owned_to(&p, exes)
 }
 
 pub fn load() -> Config {
@@ -161,7 +226,7 @@ pub fn to_ini(c: &Config) -> String {
         "[Overlay]\nlayout={layout}\nfps_only_background={}\nposition={position}\nscale={}\n\
          background_opacity={}\nshow_fps={}\nshow_cpu={}\nshow_cpu_clock={}\nshow_gpu={}\nshow_gpu_clock={}\n\
          show_vram={}\nshow_ram={}\nshow_process={}\nfahrenheit={}\nmin_fps={}\nfullscreen_only={}\n\
-         ignore={}\ntoggle_key={}\nexit_key={}\n",
+         ignore={}\nmute={}\ntoggle_key={}\nexit_key={}\n",
         b(c.fps_only_background),
         (c.scale * 100.0).round() as u32,
         (c.background_opacity * 100.0).round() as u32,
@@ -177,6 +242,7 @@ pub fn to_ini(c: &Config) -> String {
         c.min_fps,
         b(c.fullscreen_only),
         c.ignore.join(","),
+        c.mute.join(","),
         c.toggle_key,
         c.exit_key,
     )
@@ -223,6 +289,7 @@ fn set(c: &mut Config, key: &str, val: &str) {
         },
         "fullscreen_only" => flag(&mut c.fullscreen_only, &v),
         "ignore" => c.ignore = ignore_list(&v),
+        "mute" => c.mute = ignore_list(&v),
         "toggle_key" => key_code(&v, &mut c.toggle_key),
         "exit_key" => key_code(&v, &mut c.exit_key),
         _ => {}
@@ -238,7 +305,7 @@ pub fn ignore_list(v: &str) -> Vec<String> {
 }
 
 /// Adds `exe` (lowercased) unless already listed. False if it was already there.
-pub fn add_ignore(list: &mut Vec<String>, exe: &str) -> bool {
+pub fn add_to_list(list: &mut Vec<String>, exe: &str) -> bool {
     let exe = exe.trim().to_ascii_lowercase();
     if exe.is_empty() || list.contains(&exe) {
         return false;
@@ -364,16 +431,72 @@ mod tests {
     }
 
     #[test]
-    fn add_ignore_lowercases_and_skips_duplicates() {
+    fn add_to_list_lowercases_and_skips_duplicates() {
         let mut l = vec!["foo.exe".to_string()];
-        assert!(!add_ignore(&mut l, "FOO.exe"));
-        assert!(add_ignore(&mut l, " Game.EXE "));
-        assert!(!add_ignore(&mut l, ""));
+        assert!(!add_to_list(&mut l, "FOO.exe"));
+        assert!(add_to_list(&mut l, " Game.EXE "));
+        assert!(!add_to_list(&mut l, ""));
         assert_eq!(l, ["foo.exe", "game.exe"]);
     }
 
     #[test]
     fn default_ini_roundtrips() {
         assert_eq!(parse(DEFAULT_INI), Config::default());
+    }
+
+    #[test]
+    fn mute_round_trips_through_ini() {
+        let c = Config {
+            mute: vec!["a.exe".into(), "b.exe".into()],
+            ..Config::default()
+        };
+        assert_eq!(parse(&to_ini(&c)), c);
+    }
+
+    #[test]
+    fn mute_list_is_trimmed_lowercased_and_drops_empties() {
+        let c = parse("mute= A.exe , ,b.EXE");
+        assert_eq!(c.mute, ["a.exe", "b.exe"]);
+    }
+
+    #[test]
+    fn missing_mute_key_means_empty() {
+        assert!(parse("[Overlay]\ntoggle_key=112").mute.is_empty());
+    }
+
+    /// Unique scratch dir per test: pid plus a counter, like BGMuter's tests.
+    fn tmp_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "fps-overlay-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn owned_file_round_trips_and_empty_set_deletes_it() {
+        let d = tmp_dir();
+        let p = d.join("muted.txt");
+        let set = BTreeSet::from(["a.exe".to_string(), "b.exe".to_string()]);
+        save_owned_to(&p, &set).unwrap();
+        assert_eq!(load_owned_from(&p), ["a.exe", "b.exe"]);
+        assert!(!d.join("muted.txt.tmp").exists());
+        save_owned_to(&p, &BTreeSet::new()).unwrap();
+        assert!(!p.exists());
+        // Deleting an already-absent file is not an error.
+        save_owned_to(&p, &BTreeSet::new()).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn missing_owned_file_is_empty() {
+        let d = tmp_dir();
+        assert!(load_owned_from(&d.join("nope.txt")).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

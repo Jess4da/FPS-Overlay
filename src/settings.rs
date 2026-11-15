@@ -171,6 +171,9 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         min_fps: min_fps as f32,
         fullscreen_only,
         ignore: config::ignore_list(f.ignore),
+        // ponytail: the Settings window has no mute box yet; Task 4 turns this
+        // into a field, until then Save drops a hand-edited `mute=`.
+        mute: Vec::new(),
         toggle_key: f.toggle_key,
         exit_key: f.exit_key,
     })
@@ -771,7 +774,7 @@ unsafe fn pick_ignore(hwnd: HWND) {
     let Some((exe, _)) = cmd.checked_sub(1).and_then(|i| items.get(i)) else {
         return;
     };
-    config::add_ignore(&mut list, exe);
+    config::add_to_list(&mut list, exe);
     let t = crate::wide(&list.join(", "));
     // SAFETY: our edit box; buffer outlives the call.
     unsafe {
