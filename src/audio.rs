@@ -30,9 +30,7 @@ const CLSID_MM_DEVICE_ENUMERATOR: GUID = GUID::from_u128(0xBCDE_0395_E52F_467C_8
 /// COM sink for both notification interfaces. It only posts a window message:
 /// callbacks arrive on COM threads and must not touch audio state.
 #[implement(IMMNotificationClient, IAudioSessionNotification)]
-struct NotifySink {
-    msg: u32,
-}
+struct NotifySink;
 
 impl NotifySink {
     fn post(&self, kind: usize) {
@@ -40,12 +38,12 @@ impl NotifySink {
         if raw == 0 {
             return;
         }
-        // SAFETY: the handle is our own message window (stored before the mixer
-        // exists) and PostMessageW only queues data for that thread.
+        // SAFETY: `raw` is our own message window when non-zero, and PostMessageW
+        // only queues data; if the window is gone the post just fails harmlessly.
         unsafe {
             let _ = PostMessageW(
                 Some(HWND(raw as *mut c_void)),
-                self.msg,
+                crate::WM_AUDIO,
                 WPARAM(kind),
                 LPARAM(0),
             );
@@ -105,10 +103,7 @@ impl WasapiMixer {
         let enumerator: IMMDeviceEnumerator =
             // SAFETY: COM is initialized on this thread by the caller.
             unsafe { CoCreateInstance(&CLSID_MM_DEVICE_ENUMERATOR, None, CLSCTX_ALL)? };
-        let notify: IMMNotificationClient = NotifySink {
-            msg: crate::WM_AUDIO,
-        }
-        .into();
+        let notify: IMMNotificationClient = NotifySink.into();
         let session_notify: IAudioSessionNotification = notify.cast()?;
         // SAFETY: the callback object outlives the registration (see Drop).
         unsafe { enumerator.RegisterEndpointNotificationCallback(&notify)? };
@@ -125,6 +120,12 @@ impl WasapiMixer {
 
     /// Re-enumerate active render endpoints and re-register session notifications.
     pub fn refresh_endpoints(&mut self) -> Result<()> {
+        // Enumerate first: if it fails, the existing registrations stay in place.
+        // SAFETY: plain query on a live COM object owned by this STA thread.
+        let devices = unsafe {
+            self.enumerator
+                .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?
+        };
         for manager in self.managers.drain(..) {
             // SAFETY: every manager was registered with this same object.
             unsafe {
@@ -132,26 +133,26 @@ impl WasapiMixer {
             }
         }
         self.cache.clear();
-        // SAFETY: both calls are plain queries on live COM objects.
-        let devices = unsafe {
-            self.enumerator
-                .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?
-        };
+        // SAFETY: live COM object on the owning STA thread.
         let count = unsafe { devices.GetCount()? };
         for i in 0..count {
+            // SAFETY: live COM object on the owning STA thread.
             let Ok(device) = (unsafe { devices.Item(i) }) else {
                 continue;
             };
+            // SAFETY: live COM object on the owning STA thread.
             let Ok(manager) =
                 (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) })
             else {
                 continue;
             };
+            // SAFETY: the callback object outlives the registration (see `Drop`).
             if unsafe { manager.RegisterSessionNotification(&self.session_notify) }.is_err() {
                 continue;
             }
             // Sessions already running only start notifying after the enumerator is
             // fetched once (documented IAudioSessionManager2 requirement).
+            // SAFETY: live COM object on the owning STA thread.
             let _ = unsafe { manager.GetSessionEnumerator() };
             self.managers.push(manager);
         }
@@ -164,15 +165,19 @@ impl Mixer for WasapiMixer {
         self.cache.clear();
         let mut out = Vec::new();
         for manager in &self.managers {
+            // SAFETY: live COM object on the owning STA thread.
             let Ok(enumerator) = (unsafe { manager.GetSessionEnumerator() }) else {
                 continue;
             };
+            // SAFETY: live COM object on the owning STA thread.
             let count = unsafe { enumerator.GetCount() }.unwrap_or(0);
             for i in 0..count {
+                // SAFETY: live COM object on the owning STA thread.
                 let Ok(control) = (unsafe { enumerator.GetSession(i) }) else {
                     continue;
                 };
                 // Nothing here is worth muting: expired sessions are gone.
+                // SAFETY: live COM object on the owning STA thread.
                 match unsafe { control.GetState() } {
                     Ok(state) if state != AudioSessionStateExpired => {}
                     _ => continue,
@@ -180,9 +185,11 @@ impl Mixer for WasapiMixer {
                 let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
                     continue;
                 };
+                // SAFETY: live COM object on the owning STA thread.
                 if unsafe { control2.IsSystemSoundsSession() } == S_OK {
                     continue;
                 }
+                // SAFETY: live COM object on the owning STA thread.
                 let Ok(pid) = (unsafe { control2.GetProcessId() }) else {
                     continue;
                 };
@@ -192,15 +199,19 @@ impl Mixer for WasapiMixer {
                 let Ok(volume) = control.cast::<ISimpleAudioVolume>() else {
                     continue;
                 };
+                // SAFETY: live COM object on the owning STA thread.
                 let Ok(raw_id) = (unsafe { control2.GetSessionInstanceIdentifier() }) else {
                     continue;
                 };
                 // SAFETY: the id is valid until freed; copy it out first.
                 let id = unsafe { raw_id.to_string() };
+                // SAFETY: the buffer came from GetSessionInstanceIdentifier, the session
+                // is still alive, and the pointer is freed exactly once here.
                 unsafe { CoTaskMemFree(Some(raw_id.0.cast())) };
                 let Ok(id) = id else {
                     continue;
                 };
+                // SAFETY: live COM object on the owning STA thread.
                 let Ok(muted) = (unsafe { volume.GetMute() }) else {
                     continue;
                 };
@@ -257,6 +268,7 @@ mod tests {
                 println!("exe={:?} muted={} id={}", s.exe, s.muted, s.id);
             }
             println!("{} session(s)", sessions.len());
+            assert!(!sessions.is_empty(), "play some audio");
             assert!(sessions.iter().all(|s| !s.exe.is_empty()));
         }
         // SAFETY: balances the initialization above.
