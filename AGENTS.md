@@ -122,7 +122,7 @@ git tag v0.2.0; git push origin v0.2.0
 
 ## Runtime/Tooling Preferences
 
-- **Target:** `x86_64-pc-windows-msvc` on Windows 10 1809+. Needs the MSVC toolchain, plus the Windows SDK for `rc.exe` (only for the icon). Edition 2024; no pinned toolchain.
+- **Target:** `x86_64-pc-windows-msvc` on Windows 10 1809+. Needs the MSVC toolchain, plus the Windows SDK for `rc.exe` (only for the icon). Rust 1.100+ (MSRV pinned via `rust-version` in `Cargo.toml`), edition 2024; no `rust-toolchain.toml`.
 - **Exactly one dependency:** `windows = 0.62.2`. To use a new API namespace, add the feature to that same array in `Cargo.toml`.
   - Don't add crates: no `rc`/`winres`, `serde`, INI, logging or GUI crates, and no dev-dependencies.
   - Don't add Direct2D, DirectWrite or a D3D device to the overlay.
