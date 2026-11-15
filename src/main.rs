@@ -7,6 +7,7 @@ mod fps;
 mod gate;
 mod layout;
 mod metrics;
+mod mute;
 mod process;
 mod render;
 mod settings;
