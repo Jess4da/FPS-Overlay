@@ -381,6 +381,10 @@ impl App {
         if let Some(e) = self.fg_exe.as_ref().filter(|e| tray_candidate(e)) {
             self.last_fg_exe = Some(e.clone());
         }
+        // Retry a failed start (e.g. audio service not up yet at logon); free when `mute` is empty.
+        if self.mute.is_none() && !self.cfg.mute.is_empty() {
+            self.sync_mute();
+        }
         if self.mute.is_some() {
             // SAFETY: our own one-shot timer on our own window; re-arming resets it.
             unsafe { SetTimer(Some(self.hwnd), MUTE_TIMER_ID, MUTE_DEBOUNCE_MS, None) };

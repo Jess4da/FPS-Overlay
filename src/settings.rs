@@ -724,7 +724,7 @@ fn candidates(windows: Vec<(String, String)>, excluded: &[String]) -> Vec<(Strin
 }
 
 unsafe extern "system" fn collect(hwnd: HWND, lp: LPARAM) -> BOOL {
-    // SAFETY: lp is the &mut Vec passed by pick_ignore, alive for EnumWindows.
+    // SAFETY: lp is the &mut Vec passed by pick_into, alive for EnumWindows.
     let out = unsafe { &mut *(lp.0 as *mut Vec<(String, String)>) };
     // SAFETY: plain queries on a window handle supplied by EnumWindows.
     unsafe {

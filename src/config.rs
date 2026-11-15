@@ -35,7 +35,7 @@ pub struct Config {
     /// Show only while the game's client area covers its whole monitor.
     pub fullscreen_only: bool,
     pub ignore: Vec<String>,
-    /// Processes background-muted by this app; written back on exit.
+    /// Exes to mute while not in the foreground (user list).
     pub mute: Vec<String>,
     pub toggle_key: u8,
     pub exit_key: u8,
