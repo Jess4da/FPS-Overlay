@@ -360,11 +360,15 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
     if header.ProcessId != target {
         return;
     }
-    if let Some(fps) = consumer
-        .counter
-        .on_present(header.ProcessId, target, src, header.TimeStamp)
+    if let Some(sample) =
+        consumer
+            .counter
+            .on_present(header.ProcessId, target, src, header.TimeStamp)
     {
-        consumer.shared.fps_bits.store(fps.to_bits(), Relaxed);
+        consumer
+            .shared
+            .fps_bits
+            .store(sample.fps.to_bits(), Relaxed);
         consumer.shared.sample_pid.store(target, Relaxed);
         // Release last: readers load sample_qpc with Acquire, then the fields above.
         consumer.shared.sample_qpc.store(header.TimeStamp, Release);
