@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
+mod audio;
 mod autostart;
 mod config;
 mod etw;
@@ -61,6 +62,8 @@ use windows::core::{BOOL, PCWSTR, w};
 const WM_TRAY: u32 = WM_APP + 1;
 /// Update check result: lParam is a `Box<String>` tag leaked as `usize`.
 const WM_UPDATE: u32 = WM_APP + 2;
+/// Audio session or endpoint changed; wParam is `audio::NOTIFY_*`.
+pub(crate) const WM_AUDIO: u32 = WM_APP + 3;
 /// Set when an update was installed; the loop exit then starts the new exe.
 static RESTART: AtomicBool = AtomicBool::new(false);
 const ID_EXIT: usize = 1;
@@ -221,7 +224,7 @@ thread_local! {
 }
 /// Message window; the console-control handler runs on its own thread, so it
 /// posts to this window instead of re-entering our state.
-static MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static MAIN_HWND: AtomicUsize = AtomicUsize::new(0);
 /// Win32 code of a fatal provider failure, shown after the message loop ends.
 static FATAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
