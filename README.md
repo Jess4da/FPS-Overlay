@@ -16,6 +16,10 @@ window and gets its FPS from ETW present events — no injection, no hooks.
 
 Run `fps-overlay.exe`. A `config.ini` is written next to the exe on first start.
 Change settings from the tray (applied immediately), or edit the file and restart.
+Only one instance runs per user session: starting it again (e.g. Start with
+Windows plus a manual launch) exits the new copy silently. If its ETW session is
+stopped from outside (`logman stop FPSOverlayRs_ETW -ets`), the overlay starts a
+new one on the next focus change or tick, so it recovers without a restart.
 
 ## Hotkeys
 
