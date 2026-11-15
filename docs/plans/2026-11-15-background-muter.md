@@ -6,7 +6,7 @@
 
 **Architecture:** Pure `mute.rs` core + `audio.rs` WASAPI mixer ported from `D:\Coding\Rust\BGMuter\src\{core,audio}.rs`; `App` owns an optional `MuteState` driven by the existing foreground hook plus audio/WTS window messages; native Win32 settings/tray additions; `muted.txt` persistence beside `config.ini`.
 
-**Tech Stack:** Rust 1.99 edition 2024, `windows` 0.62.2, `windows-core` 0.62.
+**Tech Stack:** Rust 1.100 (after Task 0) edition 2024, `windows` 0.62.2, `windows-core` 0.62.
 
 **Spec:** `docs/specs/2026-11-15-background-muter-design.md`
 
@@ -29,6 +29,15 @@
 5. `mute` empty ⇒ no COM/audio work at all (Task 5 manual: `muted.txt` absent, no `MMDevAPI.dll` loaded per Process Explorer/`tasklist /m mmdevapi.dll`).
 
 ---
+
+### Task 0: Migrate to Rust 1.100
+
+**Files:** Modify `Cargo.toml` (`rust-version = "1.100"` under `[package]`), `AGENTS.md` (Runtime/Tooling: "Rust 1.100+ (MSRV pinned via `rust-version`), edition 2024; no `rust-toolchain.toml`"), any source file that new 1.100 lints/warnings flag.
+
+- [ ] Step 1: `rustup update stable` (1.99.1 ⇒ 1.100.0; global stable, other projects keep building). Confirm `rustc --version` = 1.100.0.
+- [ ] Step 2: Baseline on 1.100: `cargo fmt --check`, `cargo clippy --release --all-targets -- -D warnings`, `cargo test`, `cargo build --release`; record every new warning/lint and the exe size vs 481 KB.
+- [ ] Step 3: Fix new lints/warnings without behaviour changes (no `#[allow]` unless the lint is a false positive; justify each). Add `rust-version = "1.100"`.
+- [ ] Step 4: All four commands clean; exe size reported. Commit `chore: migrate to Rust 1.100`.
 
 ### Task 1: Pure mute core
 
@@ -129,4 +138,4 @@
 - [ ] Step 4: Verify: two quick launches ⇒ one process; `schtasks /Run` while running ⇒ still one, overlay still shows on game focus. Commit `fix: single instance so a second start can't kill the ETW session` (wording per actual cause). Update README/AGENTS if behaviour changes.
 
 ## Ordering
-1 → 2 → 3 → 4 → 5 sequential (shared `main.rs`/`Cargo.toml`, and one build at a time per user). Merge `feat/background-muter` to `main` after final review. Task 6 on a new branch `fix/autostart-overlay` from `main` after that merge.
+0 → 1 → 2 → 3 → 4 → 5 sequential (shared `main.rs`/`Cargo.toml`, and one build at a time per user). Merge `feat/background-muter` to `main` after final review. Task 6 on a new branch `fix/autostart-overlay` from `main` after that merge.
