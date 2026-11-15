@@ -11,7 +11,7 @@ Fold BGMuter (`D:\Coding\Rust\BGMuter`, merged `c453dc3`) into FPS Overlay so on
   - Lost ownership (session gone, unmute failed, crash, logoff) is persisted and re-adopted (`stale` exes), so a game is never left muted by us.
   - Reapply on: foreground change, audio session created, audio device change, session unlock, config change.
 - Settings window: new "Mute in background (exe names, comma separated)" edit + `Add…` picker (same running-windowed-apps menu as the ignore list). Saved and applied live.
-- Tray: "Mute `name.exe` in background" / "Stop muting `name.exe`" for the last foreground app with a window (not our own), applied live.
+- Tray: "Mute `name.exe` in background" / "Stop muting `name.exe`" for the last foreground app with a window (not our own, and not `explorer.exe`: clicking the tray focuses the taskbar, which would otherwise always be the offered app), applied live.
 - Fix: Start with Windows must show the overlay on first game focus without a manual restart.
 
 ## Non-goals

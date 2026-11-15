@@ -1,7 +1,6 @@
 //! WASAPI session enumeration, mute control and change notifications.
 // Ported from BGMuter `src/audio.rs`. COM callbacks arrive on other threads and
 // only post `WM_AUDIO` to the main window; no audio state is touched off-thread.
-#![cfg_attr(not(test), allow(dead_code))] // Task 5 wires this into the app.
 
 use std::collections::HashMap;
 use std::ffi::c_void;

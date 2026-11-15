@@ -1,7 +1,6 @@
 //! Pure mute decision logic for background apps (no Windows APIs).
 // Ported from BGMuter `src/core.rs`. Nothing here calls into the Win32 shell,
 // so the whole policy is testable without a mixer.
-#![cfg_attr(not(test), allow(dead_code))] // Task 5 wires this into the app.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 

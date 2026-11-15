@@ -15,6 +15,7 @@ mod settings;
 mod update;
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::sync::atomic::{
@@ -22,14 +23,20 @@ use std::sync::atomic::{
     Ordering::{Acquire, Relaxed, Release},
 };
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, RPC_E_CHANGED_MODE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromWindow,
 };
 use windows::Win32::Security::{TOKEN_ELEVATION, TOKEN_QUERY};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::System::RemoteDesktop::{
+    NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
+};
 use windows::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, OpenProcessToken, SetPriorityClass,
     SetProcessWorkingSetSize,
@@ -55,7 +62,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, SetMenuDefaultItem, SetTimer, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT,
     WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_QUERYENDSESSION,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+    WM_RBUTTONUP, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSW, WS_OVERLAPPED, WTS_SESSION_UNLOCK,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -70,6 +77,7 @@ const ID_EXIT: usize = 1;
 const ID_SETTINGS: usize = 2;
 const ID_AUTOSTART: usize = 3;
 const ID_IGNORE: usize = 4;
+const ID_MUTE: usize = 5;
 /// Explorer broadcasts this after it restarts; the tray icon must be re-added.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -118,15 +126,26 @@ fn tray_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Settings…"));
         let _ = SetMenuDefaultItem(menu, ID_SETTINGS as u32, 0);
         let mut game = None;
+        let mut mute = None;
         with_app(|app| {
             game = app
                 .last_game
                 .clone()
-                .filter(|g| !app.cfg.ignore.contains(g))
+                .filter(|g| !app.cfg.ignore.contains(g));
+            mute = app
+                .last_fg_exe
+                .clone()
+                .map(|e| (app.cfg.mute.contains(&e), e));
         });
         let item = game.as_ref().map(|g| wide(&format!("Don't show for {g}")));
         if let Some(t) = &item {
             let _ = AppendMenuW(menu, MF_STRING, ID_IGNORE, PCWSTR(t.as_ptr()));
+        }
+        let mute_item = mute
+            .as_ref()
+            .map(|(listed, e)| wide(&mute_menu_label(e, *listed)));
+        if let Some(t) = &mute_item {
+            let _ = AppendMenuW(menu, MF_STRING, ID_MUTE, PCWSTR(t.as_ptr()));
         }
         let auto = autostart::enabled();
         let flags = if auto {
@@ -161,6 +180,11 @@ fn tray_menu(hwnd: HWND) {
                     ignore_exe(hwnd, &g);
                 }
             }
+            ID_MUTE => {
+                if let Some((_, e)) = mute {
+                    toggle_mute(hwnd, &e);
+                }
+            }
             ID_AUTOSTART => {
                 if let Err(e) = autostart::set(!auto) {
                     let t = wide(&format!("Could not change Start with Windows:\n{e}"));
@@ -181,10 +205,29 @@ fn tray_menu(hwnd: HWND) {
 /// ponytail: an already-open Settings window keeps its old ignore text; saving it
 /// drops the new entry. Refresh its edit box here if that bites.
 fn ignore_exe(hwnd: HWND, exe: &str) {
+    edit_config(hwnd, |cfg| config::add_to_list(&mut cfg.ignore, exe));
+}
+
+/// Tray "Mute X in background" / "Stop muting X": toggle `exe` in `mute`.
+/// Same open-Settings ponytail as `ignore_exe`.
+fn toggle_mute(hwnd: HWND, exe: &str) {
+    edit_config(hwnd, |cfg| {
+        if cfg.mute.iter().any(|e| e == exe) {
+            cfg.mute.retain(|e| e != exe);
+            true
+        } else {
+            config::add_to_list(&mut cfg.mute, exe)
+        }
+    });
+}
+
+/// Clone the config out, change it, save, apply live. `change` returns false for
+/// a no-op. The error box runs with no APP borrow held.
+fn edit_config(hwnd: HWND, change: impl FnOnce(&mut Config) -> bool) {
     let mut cfg = None;
     with_app(|app| cfg = Some(app.cfg.clone()));
     let Some(mut cfg) = cfg else { return };
-    if !config::add_to_list(&mut cfg.ignore, exe) {
+    if !change(&mut cfg) {
         return;
     }
     if let Err(e) = config::save(&cfg) {
@@ -203,6 +246,27 @@ fn ignore_exe(hwnd: HWND, exe: &str) {
     with_app(|app| app.reconfigure(cfg));
 }
 
+fn mute_menu_label(exe: &str, listed: bool) -> String {
+    if listed {
+        format!("Stop muting {exe}")
+    } else {
+        format!("Mute {exe} in background")
+    }
+}
+
+/// Spec: the audio machinery exists while there is a list to apply or a mute
+/// from an earlier run (or a failed unmute) still to undo.
+fn mute_wanted(list_empty: bool, persisted_empty: bool) -> bool {
+    !list_empty || !persisted_empty
+}
+
+/// Foreground exe offered in the tray. The tray click itself focuses the
+/// taskbar (explorer.exe), so that never replaces the app the user meant.
+/// ponytail: name match; a real File Explorer window can't be offered either.
+fn tray_candidate(exe: &str) -> bool {
+    exe != "explorer.exe"
+}
+
 fn open_settings() {
     // Clone out first: the window's callbacks re-enter APP, so no borrow may be held.
     let mut cfg = None;
@@ -218,6 +282,30 @@ use crate::gate::{GameGate, GateOut, Timer};
 use crate::layout::Stats;
 
 const TIMER_ID: usize = 1;
+/// One-shot mute debounce after a foreground change (absorbs alt-tab flicker).
+const MUTE_TIMER_ID: usize = 2;
+const MUTE_DEBOUNCE_MS: u32 = 150;
+/// CoInitializeEx returned S_OK/S_FALSE on the UI thread: CoUninitialize at exit.
+static COM_INIT: AtomicBool = AtomicBool::new(false);
+
+/// Present only while muting is wanted (see `mute_wanted`); lives on the UI thread.
+struct MuteState {
+    mixer: audio::WasapiMixer,
+    muter: mute::Muter,
+    /// Last contents written to `muted.txt`.
+    saved: BTreeSet<String>,
+}
+
+impl MuteState {
+    /// Write `muted.txt` when the persisted set changed. On a write failure the
+    /// next change retries.
+    fn save(&mut self) {
+        let p = self.muter.persisted();
+        if p != self.saved && config::save_owned(&p).is_ok() {
+            self.saved = p;
+        }
+    }
+}
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -248,6 +336,11 @@ struct App {
     label: (u32, Option<String>),
     /// Exe of the last process the overlay showed for, offered in the tray menu.
     last_game: Option<String>,
+    /// Exe of the foreground window; `None` for our own process or no window.
+    fg_exe: Option<String>,
+    /// Last `fg_exe` that passed `tray_candidate`, offered in the tray menu.
+    last_fg_exe: Option<String>,
+    mute: Option<MuteState>,
     last_poll: u64,
     keys: (bool, bool),
     keys_armed: bool,
@@ -281,6 +374,14 @@ impl App {
         let pid = (pid != 0 && pid != std::process::id()).then_some(pid);
         self.fg_pid = pid.unwrap_or(0);
         self.fg_hwnd = hwnd;
+        self.fg_exe = pid.and(exe.clone());
+        if let Some(e) = self.fg_exe.as_ref().filter(|e| tray_candidate(e)) {
+            self.last_fg_exe = Some(e.clone());
+        }
+        if self.mute.is_some() {
+            // SAFETY: our own one-shot timer on our own window; re-arming resets it.
+            unsafe { SetTimer(Some(self.hwnd), MUTE_TIMER_ID, MUTE_DEBOUNCE_MS, None) };
+        }
         let out = self
             .gate
             .on_foreground(pid, exe.as_deref(), &self.cfg, self.now());
@@ -359,6 +460,8 @@ impl App {
     /// the gate for the current foreground so ignore list / min FPS / layout take
     /// effect immediately.
     fn reconfigure(&mut self, cfg: Config) {
+        // Before the swap, so apps removed from `mute` are unmuted.
+        self.mute_release();
         self.overlay.set_config(&cfg);
         self.cfg = cfg;
         self.hide();
@@ -371,6 +474,77 @@ impl App {
         let fg = self.fg_hwnd;
         self.fg_hwnd = HWND::default();
         self.foreground(fg);
+        self.sync_mute();
+    }
+
+    /// Create or drop `MuteState` per `mute_wanted`, reconciling in between.
+    /// With `mute` empty and no `muted.txt`, nothing (COM, audio, WTS) is touched.
+    fn sync_mute(&mut self) {
+        if self.mute.is_none() {
+            let stale = config::load_owned();
+            if !mute_wanted(self.cfg.mute.is_empty(), stale.is_empty()) || !com_init() {
+                return;
+            }
+            let Ok(mixer) = audio::WasapiMixer::new() else {
+                return;
+            };
+            let muter = mute::Muter::with_stale(stale);
+            let saved = muter.persisted();
+            // SAFETY: our own window; unregistered in `drop_mute`. Failure only
+            // loses the unlock reapply.
+            let _ = unsafe { WTSRegisterSessionNotification(self.hwnd, NOTIFY_FOR_THIS_SESSION) };
+            self.mute = Some(MuteState {
+                mixer,
+                muter,
+                saved,
+            });
+        }
+        self.mute_reconcile();
+        if let Some(m) = &self.mute
+            && !mute_wanted(self.cfg.mute.is_empty(), m.muter.persisted().is_empty())
+        {
+            self.drop_mute();
+        }
+    }
+
+    fn mute_reconcile(&mut self) {
+        if let Some(m) = self.mute.as_mut() {
+            m.muter
+                .reconcile(&mut m.mixer, &self.cfg.mute, self.fg_exe.as_deref());
+            m.save();
+        }
+    }
+
+    fn mute_release(&mut self) {
+        if let Some(m) = self.mute.as_mut() {
+            m.muter.release(&mut m.mixer);
+            m.save();
+        }
+    }
+
+    /// `WM_AUDIO`: a device change re-registers session notifications first.
+    fn on_audio(&mut self, kind: usize) {
+        if let Some(m) = self.mute.as_mut()
+            && kind == audio::NOTIFY_DEVICE
+        {
+            let _ = m.mixer.refresh_endpoints();
+        }
+        self.mute_reconcile();
+    }
+
+    /// Release, save, and free the audio side. Also the exit path: must run
+    /// before `App` drops so nothing we muted stays muted.
+    fn drop_mute(&mut self) {
+        if self.mute.is_none() {
+            return;
+        }
+        self.mute_release();
+        // SAFETY: our own window and timer; both calls are no-ops if not active.
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), MUTE_TIMER_ID);
+            let _ = WTSUnRegisterSessionNotification(self.hwnd);
+        }
+        self.mute = None;
     }
 
     fn tick(&mut self) {
@@ -565,6 +739,38 @@ fn with_app(f: impl FnOnce(&mut App)) {
     });
 }
 
+/// Every exit path: unmute what we muted and save `muted.txt` (inside
+/// `drop_mute`), then drop `App` (ETW stop, overlay, mixer).
+fn shutdown(slot: &mut Option<App>) {
+    if let Some(app) = slot.as_mut() {
+        app.drop_mute();
+    }
+    drop(slot.take());
+}
+
+/// Init COM (STA) on the UI thread once, on first use of the mixer. S_OK and
+/// S_FALSE need a matching `CoUninitialize`; RPC_E_CHANGED_MODE means some
+/// other code already chose MTA, which the mixer works under too (no uninit).
+fn com_init() -> bool {
+    if COM_INIT.load(Relaxed) {
+        return true;
+    }
+    // SAFETY: called on the UI thread only; balanced by `com_uninit`.
+    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    if hr.is_ok() {
+        COM_INIT.store(true, Relaxed);
+    }
+    hr.is_ok() || hr == RPC_E_CHANGED_MODE
+}
+
+/// After `App` (and so the mixer) dropped. No-op if COM was never initialised.
+fn com_uninit() {
+    if COM_INIT.swap(false, Relaxed) {
+        // SAFETY: balances the successful CoInitializeEx in `com_init`, same thread.
+        unsafe { CoUninitialize() };
+    }
+}
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
@@ -696,6 +902,9 @@ fn main() {
         frame: None,
         label: (0, None),
         last_game: None,
+        fg_exe: None,
+        last_fg_exe: None,
+        mute: None,
         last_poll: 0,
         keys: (false, false),
         keys_armed: false,
@@ -731,7 +940,10 @@ fn main() {
             0,
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         );
-        with_app(|app| app.foreground(GetForegroundWindow()));
+        with_app(|app| {
+            app.foreground(GetForegroundWindow());
+            app.sync_mute();
+        });
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -746,8 +958,11 @@ fn main() {
         }
     }
 
-    // Explicit drop: stops the ETW session and frees the overlay before exit.
-    APP.with(|slot| drop(slot.borrow_mut().take()));
+    // Late COM audio callbacks must not post to a window that is going away.
+    MAIN_HWND.store(0, Relaxed);
+    // Explicit drop: unmutes, stops the ETW session and frees the overlay before exit.
+    APP.with(|slot| shutdown(&mut slot.borrow_mut()));
+    com_uninit();
     tray(hwnd, NIM_DELETE);
 
     let code = FATAL.load(Relaxed);
@@ -799,7 +1014,25 @@ fn main_window() -> Option<HWND> {
 unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_TIMER => {
-            with_app(|app| app.tick());
+            if wp.0 == MUTE_TIMER_ID {
+                with_app(|app| {
+                    // SAFETY: our own one-shot timer on our own window.
+                    let _ = unsafe { KillTimer(Some(hwnd), MUTE_TIMER_ID) };
+                    app.mute_reconcile();
+                });
+            } else {
+                with_app(|app| app.tick());
+            }
+            LRESULT(0)
+        }
+        WM_AUDIO => {
+            with_app(|app| app.on_audio(wp.0));
+            LRESULT(0)
+        }
+        WM_WTSSESSION_CHANGE => {
+            if wp.0 as u32 == WTS_SESSION_UNLOCK {
+                with_app(|app| app.mute_reconcile());
+            }
             LRESULT(0)
         }
         WM_QUERYENDSESSION => LRESULT(1),
@@ -830,12 +1063,15 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             // wParam FALSE means the shutdown was cancelled: keep running.
             if wp.0 != 0 {
                 // Windows may end the process as soon as we return, so drop the
-                // state here: Etw::drop stops the session instead of orphaning it.
+                // state here: unmute what we muted, and Etw::drop stops the
+                // session instead of orphaning it.
+                MAIN_HWND.store(0, Relaxed);
                 APP.with(|slot| {
                     if let Ok(mut slot) = slot.try_borrow_mut() {
-                        drop(slot.take());
+                        shutdown(&mut slot);
                     }
                 });
+                com_uninit();
                 // SAFETY: posts to the message loop's thread.
                 unsafe { PostQuitMessage(0) };
             }
@@ -950,6 +1186,30 @@ mod tests {
         assert_eq!(ms_between(10_000_000, 5_000_000, 2_000_000), 300);
         assert_eq!(ms_between(10_000_000, 5_000_000, 0), 0); // 0 = "no sample"
         assert_eq!(ms_between(0, 10, 0), 0);
+    }
+
+    #[test]
+    fn mute_menu_label_follows_listed() {
+        assert_eq!(
+            mute_menu_label("game.exe", false),
+            "Mute game.exe in background"
+        );
+        assert_eq!(mute_menu_label("game.exe", true), "Stop muting game.exe");
+    }
+
+    #[test]
+    fn mute_state_wanted_for_list_or_leftover_mutes() {
+        assert!(!mute_wanted(true, true)); // idle: no COM at all
+        assert!(mute_wanted(false, true));
+        // List emptied but a mute (crash, failed unmute) is still to undo.
+        assert!(mute_wanted(true, false));
+        assert!(mute_wanted(false, false));
+    }
+
+    #[test]
+    fn taskbar_click_does_not_replace_tray_candidate() {
+        assert!(!tray_candidate("explorer.exe"));
+        assert!(tray_candidate("game.exe"));
     }
 
     #[test]

@@ -131,11 +131,7 @@ fn path() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.join("config.ini")))
 }
 
-// The whole `muted.txt` block below is test-only until Task 5 wires it into the
-// app; then every `allow(dead_code)` here goes away.
-
 /// `muted.txt` beside the exe: exes this app muted and must unmute on exit.
-#[allow(dead_code)]
 fn owned_path() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
@@ -144,7 +140,6 @@ fn owned_path() -> Option<PathBuf> {
 
 /// One exe per line. Missing or unreadable reads as empty: a session must not
 /// fail over this file.
-#[allow(dead_code)]
 fn load_owned_from(p: &Path) -> Vec<String> {
     std::fs::read_to_string(p)
         .map(|t| {
@@ -160,7 +155,6 @@ fn load_owned_from(p: &Path) -> Vec<String> {
 /// An empty set removes the file (nothing was muted); NotFound is success.
 /// Otherwise the temp file goes in the same directory and is renamed over the
 /// real one, so a crash can't leave half a list.
-#[allow(dead_code)]
 fn save_owned_to(p: &Path, exes: &BTreeSet<String>) -> std::io::Result<()> {
     if exes.is_empty() {
         return match std::fs::remove_file(p) {
@@ -176,14 +170,12 @@ fn save_owned_to(p: &Path, exes: &BTreeSet<String>) -> std::io::Result<()> {
     std::fs::rename(&tmp, p)
 }
 
-#[allow(dead_code)]
 pub fn load_owned() -> Vec<String> {
     owned_path()
         .map(|p| load_owned_from(&p))
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
 pub fn save_owned(exes: &BTreeSet<String>) -> std::io::Result<()> {
     let p = owned_path().ok_or_else(|| std::io::Error::other("no exe directory"))?;
     save_owned_to(&p, exes)
