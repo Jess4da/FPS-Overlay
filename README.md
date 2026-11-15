@@ -104,7 +104,9 @@ cargo build --release
 
 Single static-CRT exe, two crates (`windows`, `windows-core`, both from the
 same `windows-rs` release). `pdh.dll`, `dxgi.dll`, `version.dll` and
-`dwmapi.dll` are delay-loaded, so the FPS-only layout never maps them.
+`dwmapi.dll` are delay-loaded, so the FPS-only layout never maps them;
+`ole32.dll` and `wtsapi32.dll` are delay-loaded too, so they stay unmapped
+while `mute` is empty.
 
 ## CI and releases
 
@@ -129,10 +131,12 @@ git tag v0.2.0 && git push origin v0.2.0
 
 Release build measured on this machine:
 
-- `fps-overlay.exe`: 515,584 bytes (~504 KB), no DLLs to ship.
-- With `mute` empty (and no `muted.txt`), COM is never initialised, the audio
-  stack (`mmdevapi.dll`) is never loaded and no extra timer runs. With `mute`
-  set, muting is event-driven (foreground change, audio session/device change,
-  unlock) plus one 150 ms one-shot debounce per foreground change.
+- `fps-overlay.exe`: 516,608 bytes (~504 KB; budget 550 KB), no DLLs to ship.
+- With `mute` empty (and no `muted.txt`), COM is never initialised, `ole32`,
+  `wtsapi32` and the audio stack (`mmdevapi.dll`) are never loaded and no extra
+  timer runs. With `mute` set, muting is event-driven (foreground change, audio
+  session/device change, unlock) plus one 150 ms one-shot debounce per
+  foreground change.
 - Import table: system DLLs only (`kernel32`, `user32`, `gdi32`, `shell32`,
-  `advapi32`, `ole32`, `oleaut32`, `wtsapi32`, `ntdll`).
+  `advapi32`, `combase`, `oleaut32`, `ntdll`); delay-loaded: `pdh`, `dxgi`,
+  `version`, `dwmapi`, `ole32`, `wtsapi32`.

@@ -5,7 +5,7 @@
 Windows-only, in-game FPS overlay written in Rust. It shows a Steam-like stats bar (`FPS | CPU | GPU | MHz | VRAM | RAM`, plus a process line) or a lone NVIDIA-style FPS counter, **only while a game is the foreground window**. FPS comes from ETW present events, with no injection and no hooks, so it is anti-cheat safe. It is a port of the `steam` layout from a C++/ImGui app (`D:\Coding\OtherCode\fps-overlay`), redesigned from scratch.
 
 The second main goal is to be **as lightweight as possible**. Budgets (spec "Goals"):
-- exe ≤ 500 KB
+- exe ≤ 550 KB
 - idle: 0 timers, 0 polling, ≤ 5 MB private bytes
 - in game: < 0.5% of one core, ≤ 10 MB (NVML excluded)
 - at most one redraw per second
@@ -72,7 +72,7 @@ git tag v0.2.0; git push origin v0.2.0
 
 - **Running the exe** triggers UAC; it relaunches itself elevated via `runas`. Declining exits silently.
 - **Stuck ETW session after a crash:** `logman query -ets | findstr FPSOverlay`, then `logman stop FPSOverlayRs_ETW -ets` (both elevated). The app also clears a stale session on start.
-- **Checking size and imports:** `dumpbin /dependents target\release\fps-overlay.exe` should list system DLLs only, with `pdh.dll`, `dxgi.dll`, `version.dll` and `dwmapi.dll` under *delay load*.
+- **Checking size and imports:** `dumpbin /dependents target\release\fps-overlay.exe` should list system DLLs only, with `pdh.dll`, `dxgi.dll`, `version.dll`, `dwmapi.dll`, `ole32.dll` and `wtsapi32.dll` under *delay load*.
 
 ## Code Conventions & Common Patterns
 
@@ -128,7 +128,7 @@ git tag v0.2.0; git push origin v0.2.0
 | `src/audio.rs` | `WasapiMixer` (implements `Mixer`), endpoint/session notification sinks posting `WM_AUDIO` |
 | `src/config.rs` | `Config`, `DEFAULT_INI`, hand-written `parse`/`to_ini`/`load`/`save`. Bad values fall back per key. `load_owned`/`save_owned` for `muted.txt` |
 | `src/settings.rs` | Settings window (tray double-click): validates with `from_fields`, saves, applies live |
-| `build.rs` | `/DELAYLOAD` for pdh/dxgi/version/dwmapi, the Common Controls v6 manifest, and the icon via SDK `rc.exe` (if `rc.exe` isn't found, the build still succeeds with the stock icon) |
+| `build.rs` | `/DELAYLOAD` for pdh/dxgi/version/dwmapi/ole32/wtsapi32, the Common Controls v6 manifest, and the icon via SDK `rc.exe` (if `rc.exe` isn't found, the build still succeeds with the stock icon) |
 | `.cargo/config.toml` | `+crt-static` for `x86_64-pc-windows-msvc` only. Linker args belong in `build.rs` (`rustc-link-arg-bins`) so they don't apply to the build script |
 | `.github/workflows/ci.yml` | Push to `main` / PR: `fmt --check`, clippy `-D warnings`, tests, release build, exe uploaded as an artifact (windows-latest) |
 | `.github/workflows/release.yml` | Tag `vX.Y.Z[-pre]`: checks the tag is semver and equals `Cargo.toml` `version`, builds, publishes a GitHub Release with `fps-overlay-vX.Y.Z-x86_64-windows.zip` (only `fps-overlay.exe` at its root, so it extracts over an install) + `.sha256` (`-pre` tags become pre-releases) |

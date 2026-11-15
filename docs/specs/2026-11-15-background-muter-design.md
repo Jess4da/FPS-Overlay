@@ -59,7 +59,7 @@ Expected fix shape (decided after diagnosis): named mutex `Local\FpsOverlayRs` s
 
 ## Constraints
 - AGENTS.md rules stay binding except the one-dependency rule (now `windows` + `windows-core`).
-- Exe budget is ≤ 500 KB; last measured build 481 KB. Measure after the muter lands; if it exceeds 500 KB, stop and ask the user before trimming or raising the budget.
+- Exe budget: raised from 500 KB to 550 KB by the user after the muter measured 515,584 B. `ole32.dll`/`wtsapi32.dll` are delay-loaded so they stay unmapped while `mute` is empty.
 - Idle with `mute` empty: unchanged budgets (0 timers, ≤ 5 MB). Idle with `mute` non-empty: event-driven only; private bytes measured and reported (audio COM adds some).
 - New `windows` features only as needed: `Win32_Media_Audio`, `Win32_System_Com`, `Win32_System_Com_StructuredStorage`, `Win32_System_Variant`, `Win32_System_RemoteDesktop`.
 - Tests: pure core + config round-trip (`parse(to_ini(c)) == c` with `mute`), `from_fields` with mute; no wiring tests.
