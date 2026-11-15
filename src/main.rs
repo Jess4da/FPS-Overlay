@@ -591,12 +591,13 @@ impl App {
         }
         // Load the timestamp first: it is the commit flag for the other fields.
         let at = SHARED.sample_qpc.load(Acquire);
+        let mut low = None;
         let sample = (at != 0).then(|| {
-            (
-                SHARED.sample_pid.load(Relaxed),
-                f32::from_bits(SHARED.fps_bits.load(Relaxed)),
-                ms_between(self.freq, qpc, at),
-            )
+            let pid = SHARED.sample_pid.load(Relaxed);
+            let fps = f32::from_bits(SHARED.fps_bits.load(Relaxed));
+            let bits = SHARED.low_bits.load(Relaxed);
+            low = (bits != 0).then(|| f32::from_bits(bits));
+            (pid, fps, ms_between(self.freq, qpc, at))
         });
         let saw_user_mode = self.target != 0 && SHARED.saw_pid.load(Relaxed) == self.target;
         let out = self.gate.on_tick(sample, saw_user_mode, &self.cfg, now);
@@ -635,6 +636,7 @@ impl App {
             self.stats.label = self.label.1.clone();
         }
         self.stats.fps = out.fps;
+        self.stats.fps_low = out.fps.and(low);
 
         let anchor = self.fg_hwnd;
         let (mon, dpi) = monitor_of(anchor);

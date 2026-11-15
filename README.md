@@ -70,8 +70,10 @@ A tray icon ("FPS Overlay") is always present:
 
 ## Layouts
 
-- `layout=steam` (default): one line `FPS 180 | CPU 15% | 5545 MHz | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G`
-  plus a process line `RocketLeague.exe (Rocket League)`.
+- `layout=steam` (default): one line `FPS 180 | 1% 142 | CPU 15% | 5545 MHz | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G`
+  plus a process line `RocketLeague.exe (Rocket League)`. The `1% 142` group is
+  optional (`show_low=1`): nearest-rank p99 frame time over the last 10 s,
+  `---` until 100 frames.
 - `layout=fps-only`: a single FPS number with a drop shadow, no background by
   default. CPU/GPU/RAM are never polled in this layout (PDH, DXGI and NVML are
   never loaded).

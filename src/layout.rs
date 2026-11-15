@@ -34,6 +34,7 @@ pub struct Frame {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stats {
     pub fps: Option<f32>,
+    pub fps_low: Option<f32>,
     pub cpu: Option<f32>,
     pub cpu_mhz: Option<f32>,
     pub gpu: Option<f32>,
@@ -126,8 +127,8 @@ fn usage(used: f32, total: f32) -> f32 {
 }
 
 /// `%.0f`, or `---` when there is no reading.
-fn fps_text(s: &Stats) -> (String, Rgb) {
-    match s.fps {
+fn fps_text(fps: Option<f32>) -> (String, Rgb) {
+    match fps {
         Some(f) => (format!("{f:.0}"), fps_color(f)),
         None => ("---".to_string(), no_data()),
     }
@@ -135,7 +136,7 @@ fn fps_text(s: &Stats) -> (String, Rgb) {
 
 pub fn build(s: &Stats, c: &Config) -> Frame {
     if c.layout == Layout::FpsOnly {
-        let (text, color) = fps_text(s);
+        let (text, color) = fps_text(s.fps);
         return Frame {
             lines: vec![Line {
                 runs: vec![part(text, color, 0.0)],
@@ -152,9 +153,17 @@ pub fn build(s: &Stats, c: &Config) -> Frame {
     let mut groups: Vec<Vec<Run>> = Vec::new();
 
     if c.show_fps {
-        let (text, color) = fps_text(s);
+        let (text, color) = fps_text(s.fps);
         groups.push(vec![
             label("FPS", rgb(0.92, 0.52, 0.58)),
+            part(text, color, LABEL_GAP),
+        ]);
+    }
+
+    if c.show_low {
+        let (text, color) = fps_text(s.fps_low);
+        groups.push(vec![
+            label("1%", rgb(0.92, 0.52, 0.58)),
             part(text, color, LABEL_GAP),
         ]);
     }
@@ -260,6 +269,7 @@ mod tests {
     fn full() -> Stats {
         Stats {
             fps: Some(180.0),
+            fps_low: Some(142.0),
             cpu: Some(15.0),
             cpu_mhz: Some(4400.0),
             gpu: Some(25.0),
@@ -407,6 +417,7 @@ mod tests {
     fn gpu_none_renders_na() {
         let s = Stats {
             fps: Some(180.0),
+            fps_low: None,
             cpu: Some(15.0),
             cpu_mhz: None,
             gpu: None,
@@ -475,5 +486,80 @@ mod tests {
         let f = build(&Stats::default(), &c);
         assert_eq!(f.lines[0].runs[0].text, "---");
         assert_eq!(f.lines[0].runs[0].color, Rgb(128, 128, 140));
+    }
+
+    fn fps_low_groups(show_low: bool) -> Config {
+        Config {
+            show_low,
+            ..fps_only_groups()
+        }
+    }
+
+    #[test]
+    fn low_group_after_fps() {
+        let c = fps_low_groups(true);
+        let s = Stats {
+            fps: Some(144.0),
+            fps_low: Some(98.0),
+            ..Stats::default()
+        };
+        let f = build(&s, &c);
+        assert_eq!(f.lines[0].size, 1.0);
+        assert_eq!(text(&f.lines[0]), "FPS144 | 1%98");
+        let runs = &f.lines[0].runs;
+        assert_eq!(runs[2].text, " | ");
+        assert_eq!(runs[3].text, "1%");
+        assert_eq!(runs[3].color, runs[0].color);
+        assert_eq!(runs[3].color, Rgb(235, 133, 148));
+        assert_eq!(runs[3].gap_before, 0.0);
+        assert_eq!(runs[4].text, "98");
+        assert_eq!(runs[4].color, Rgb(46, 240, 115));
+        assert_eq!(runs[4].gap_before, 3.0);
+    }
+
+    #[test]
+    fn low_none_shows_dashes() {
+        let c = fps_low_groups(true);
+        let s = Stats {
+            fps: Some(144.0),
+            fps_low: None,
+            ..Stats::default()
+        };
+        let runs = &build(&s, &c).lines[0].runs;
+        assert_eq!(runs[3].text, "1%");
+        assert_eq!(runs[4].text, "---");
+        assert_eq!(runs[4].color, Rgb(128, 128, 140));
+    }
+
+    #[test]
+    fn low_hidden_when_off() {
+        let c = fps_low_groups(false);
+        let s = Stats {
+            fps: Some(144.0),
+            fps_low: Some(98.0),
+            ..Stats::default()
+        };
+        let t = text(&build(&s, &c).lines[0]);
+        assert_eq!(t, "FPS144");
+        assert!(!t.contains("1%"), "{t}");
+    }
+
+    #[test]
+    fn fps_only_never_shows_low() {
+        let c = Config {
+            layout: Layout::FpsOnly,
+            show_low: true,
+            ..Config::default()
+        };
+        let s = Stats {
+            fps: Some(180.0),
+            fps_low: Some(30.0),
+            ..Stats::default()
+        };
+        let f = build(&s, &c);
+        assert_eq!(f.lines.len(), 1);
+        assert_eq!(f.lines[0].runs.len(), 1);
+        assert_eq!(f.lines[0].runs[0].text, "180");
+        assert_eq!(f.lines[0].runs[0].color, Rgb(46, 240, 115));
     }
 }
