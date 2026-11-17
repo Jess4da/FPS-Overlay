@@ -331,6 +331,8 @@ mod tests {
         let mut muter = Muter::default();
         muter.toggle_hold("game.exe");
         muter.reconcile(&mut m, &l, Some("game.exe"));
+        // Listed and focused would unmute; the hold must mute anyway.
+        assert_eq!(m.calls, calls(&[("g", true)]));
         muter.toggle_hold("game.exe");
         muter.reconcile(&mut m, &l, Some("other.exe")); // still listed + background: stays muted
         assert_eq!(m.calls, calls(&[("g", true)]));
