@@ -8,14 +8,14 @@ Fold BGMuter (`D:\Coding\Rust\BGMuter`, merged `c453dc3`) into FPS Overlay so on
 - Independent of the game gate: muting does not require FPS detection or a candidate, and `ignore` does not affect it.
 - BGMuter guarantees kept verbatim (port, not rewrite):
   - Only unmute sessions BGMuter muted (owned set); a mute the user set themselves is respected.
-  - Lost ownership (session gone, unmute failed, crash, logoff) is persisted and re-adopted (`stale` exes), so a game is never left muted by us.
+  - Lost ownership (session gone, unmute failed, crash, logoff) is persisted and re-adopted (`stale` exes), so a game is never left muted by us. Adoption does not require the exe to be in `mute` (`2026-11-17-mute-hotkey-design.md`), so a game the mute hotkey held when we crashed is unmuted on the next start too.
   - Reapply on: foreground change, audio session created, audio device change, session unlock, config change.
 - Settings window: new "Mute in background (exe names, comma separated)" edit + `Add…` picker (same running-windowed-apps menu as the ignore list). Saved and applied live.
 - Tray: "Mute `name.exe` in background" / "Stop muting `name.exe`" for the last foreground app with a window (not our own, and not `explorer.exe`: clicking the tray focuses the taskbar, which would otherwise always be the offered app), applied live.
 - Fix: Start with Windows must show the overlay on first game focus without a manual restart.
 
 ## Non-goals
-Auto-muting every detected game; per-app volume (only mute); fade; hotkey for muting; UWP apps (foreground is `ApplicationFrameHost.exe`).
+Auto-muting every detected game; per-app volume (only mute); fade; UWP apps (foreground is `ApplicationFrameHost.exe`). The hotkey for muting is no longer a non-goal: see `2026-11-17-mute-hotkey-design.md`.
 
 ## Anti-goals
 - A game left muted by us after it exits, after we exit, crash, or after logoff.

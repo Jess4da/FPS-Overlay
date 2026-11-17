@@ -47,8 +47,6 @@ impl Muter {
     }
 
     /// Add or remove `exe` from the hold set; returns whether it is now held.
-    // ponytail: no caller until the mute hotkey lands; drop the allow with it.
-    #[allow(dead_code)]
     pub fn toggle_hold(&mut self, exe: &str) -> bool {
         if self.held.remove(exe) {
             return false;
@@ -57,14 +55,12 @@ impl Muter {
         true
     }
 
-    #[allow(dead_code)]
     pub fn is_holding(&self) -> bool {
         !self.held.is_empty()
     }
 
     /// Drop holds failing `keep`. `owned` mutes stay until the next
     /// `reconcile` sees them unwanted.
-    #[allow(dead_code)]
     pub fn retain_holds(&mut self, keep: impl FnMut(&String) -> bool) {
         self.held.retain(keep);
     }

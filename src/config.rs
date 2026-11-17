@@ -25,7 +25,6 @@ pub enum Modifier {
 }
 
 impl Modifier {
-    #[allow(dead_code)] // Read by the mute-chord poll; lands with the hotkey work.
     pub fn vk(self) -> Option<u8> {
         match self {
             Modifier::None => None,
