@@ -501,6 +501,7 @@ impl App {
     /// the gate for the current foreground so ignore list / min FPS / layout take
     /// effect immediately.
     fn reconfigure(&mut self, cfg: Config) {
+        // ponytail: a held game blips unmuted on Save; skip held exes in this release if it bites.
         // Before the swap, so apps removed from `mute` are unmuted.
         self.mute_release();
         self.overlay.set_config(&cfg);

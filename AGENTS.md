@@ -62,7 +62,7 @@ Background mute (only while App.mute is Some):
 
 ```powershell
 cargo build --release                          # target\release\fps-overlay.exe
-cargo test                                     # all unit tests (108)
+cargo test                                     # all unit tests (123)
 cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process, autostart, update, mute)
 cargo test lists_live_sessions -- --ignored --nocapture  # real WASAPI session list (needs a playing app)
 cargo test poll_smoke -- --nocapture           # real PDH/DXGI/NVML poll, prints Sample + timing (~1.1 s)
@@ -113,7 +113,7 @@ git tag v0.5.0; git push origin v0.5.0
   - Top-down DIBs use a negative `biHeight`.
   - Re-select `dc_old` before `DeleteObject` on a cached font.
   - The mask DIB must be filled with `MASK_EMPTY = 0`, or the background alpha is counted twice.
-- **Settings window (`src/settings.rs`):** raw `BS_*`/`CB_*`/`BM_*` constants are used instead of the `Controls` feature. `CHECKS` order is tied to `Fields::checks` and `ID_CHECKS + i`, so change all three together.
+- **Settings window (`src/settings.rs`):** raw `BS_*`/`CB_*`/`BM_*`/`TCM_*`/`TBM_*`/`TCN_*`/`EN_*` constants are used instead of the `Controls` feature, and `NMHDR`/`TCITEMW` are hand-declared `#[repr(C)]` (`Nmhdr`, `TcItemW`; only the fields used). `CHECKS` order is tied to `Fields::checks` and `ID_CHECKS + i`, so change all three together. Controls are assigned to a tab page by calling `page(..)` before them in `build`; on a page `x` is page-relative and `y` is relative to the current group box (`group(..)` sets the base), with `TAB`/`PAGE_X`/`PAGE_Y`/`OVERLAY_GROUPS`/`MUTE_GROUP` holding the geometry.
 
 ## Important Files
 

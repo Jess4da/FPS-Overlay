@@ -148,7 +148,7 @@ git tag v0.5.0 && git push origin v0.5.0
 
 Release build measured on this machine:
 
-- `fps-overlay.exe`: 525,824 bytes (~514 KB; budget 550 KB), no DLLs to ship.
+- `fps-overlay.exe`: 531,456 bytes (~519 KB; budget 550 KB), no DLLs to ship.
 - With `mute` empty (and no `muted.txt`), COM is never initialised until you
   first press the mute hotkey; `ole32`, `wtsapi32` and the audio stack
   (`mmdevapi.dll`) stay unmapped and no extra timer runs. With `mute` set,
