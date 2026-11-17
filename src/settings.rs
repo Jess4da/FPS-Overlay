@@ -8,8 +8,9 @@ use std::cell::{Cell, RefCell};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, GetMonitorInfoW, HBRUSH, HFONT, HGDIOBJ,
-    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    COLOR_BTNFACE, COLOR_WINDOW, CreateFontIndirectW, DeleteObject, GetMonitorInfoW,
+    GetSysColorBrush, HBRUSH, HDC, HFONT, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint, SetBkMode, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
@@ -24,10 +25,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MB_ICONERROR, MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MF_STRING, MessageBoxW,
     NONCLIENTMETRICSW, RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
     SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTALIGN,
-    TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HSCROLL,
-    WM_NOTIFY, WM_SETFONT, WM_SETICON, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
-    WS_EX_CONTROLPARENT, WS_EX_TOOLWINDOW, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC,
+    WM_DESTROY, WM_HSCROLL, WM_NOTIFY, WM_SETFONT, WM_SETICON, WNDCLASSW, WS_CAPTION, WS_CHILD,
+    WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_TOOLWINDOW, WS_MINIMIZEBOX,
+    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -94,9 +95,21 @@ const ID_MIN_FPS_SLIDER: i32 = 143;
 const OVERLAY: usize = 0;
 const MUTE: usize = 1;
 const TABS: [&str; 2] = ["Overlay", "Mute"];
+/// Tab control rect `(x, y, w, h)` in client units.
+const TAB: (i32, i32, i32, i32) = (10, 8, 380, 542);
 /// Client-space origin of every tab page's controls.
 const PAGE_X: i32 = 14;
 const PAGE_Y: i32 = 34;
+/// Group boxes on the Overlay page, `(top, height)` in page units, in build
+/// order. Controls on a page are placed relative to their own group box.
+const OVERLAY_GROUPS: [(i32, i32); 4] = [(0, 176), (192, 124), (324, 124), (456, 54)];
+/// The Mute page's single group box.
+const MUTE_GROUP: (i32, i32) = (0, 200);
+/// Group-box width and the height of a checkbox.
+const GROUP_W: i32 = 372;
+const CHECK_H: i32 = 22;
+/// Steam-bar checkbox grid, group-relative: first row top and row step.
+const BAR_ROW: (i32, i32) = (20, 20);
 
 /// Number boxes with a slider beside them: (box id, slider id, min, max). The box
 /// keeps its own wider validation; the slider only ever shows the clamped value.
@@ -411,8 +424,13 @@ struct TcItemW {
 unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) -> [Vec<HWND>; 2] {
     // Page the following controls belong to; `None` is the shared bottom row.
     let cur: Cell<Option<usize>> = Cell::new(None);
+    // Top of the group box being filled: a page control's y is relative to it.
+    let base: Cell<i32> = Cell::new(0);
     let pages: RefCell<[Vec<HWND>; 2]> = RefCell::new([Vec::new(), Vec::new()]);
-    let page = |tab: usize| cur.set(Some(tab));
+    let page = |tab: usize| {
+        cur.set(Some(tab));
+        base.set(0);
+    };
 
     let ctl = |class: PCWSTR,
                text: &str,
@@ -425,10 +443,9 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
                id: i32| {
         let text = crate::wide(text);
         let tab = cur.get();
-        let (x, y) = if tab.is_some() {
-            (x + PAGE_X, y + PAGE_Y)
-        } else {
-            (x, y)
+        let (x, y) = match tab {
+            Some(_) => (x + PAGE_X, y + base.get() + PAGE_Y),
+            None => (x, y),
         };
         // Overlay is the initially selected page, so only Mute starts hidden.
         let shown = tab.is_none_or(|t| t == OVERLAY);
@@ -515,24 +532,28 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
             x,
             y,
             w,
-            22,
+            CHECK_H,
             id,
         );
         // SAFETY: our checkbox.
         unsafe { SendMessageW(h, BM_SETCHECK, Some(WPARAM(on as usize)), None) };
     };
-    let group = |text: &str, y: i32, h: i32| {
-        ctl(
+    // A group box also sets the page y-base its controls are laid out from.
+    let group = |text: &str, (top, h): (i32, i32)| {
+        base.set(0);
+        let box_ = ctl(
             w!("BUTTON"),
             text,
             BS_GROUPBOX,
             WINDOW_EX_STYLE(0),
             0,
-            y,
-            372,
+            top,
+            GROUP_W,
             h,
             -1,
-        )
+        );
+        base.set(top);
+        box_
     };
     // Trackbar beside a number box; starts at the box's own (clamped) value.
     let slider = |x: i32, y: i32, id: i32, lo: u32, hi: u32, text: &str| {
@@ -575,16 +596,18 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
             .collect::<Vec<_>>()
     };
 
-    // Tabs first, so the page controls created after it paint above its body.
+    // Tabs first: Win32 puts each new child at the bottom of the z-order, so the
+    // page controls created later paint above the tab body. WS_CLIPSIBLINGS keeps
+    // the tab, the topmost sibling, from painting its pane over them.
     let tabs = ctl(
         w!("SysTabControl32"),
         "",
-        WS_TABSTOP.0,
+        WS_TABSTOP.0 | WS_CLIPSIBLINGS.0,
         WINDOW_EX_STYLE(0),
-        10,
-        8,
-        380,
-        542,
+        TAB.0,
+        TAB.1,
+        TAB.2,
+        TAB.3,
         ID_TABS,
     );
     for (i, name) in TABS.iter().enumerate() {
@@ -611,7 +634,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
 
     // Overlay page
     page(OVERLAY);
-    group("Appearance", 0, 176);
+    group("Appearance", OVERLAY_GROUPS[0]);
     label("Layout", 14, 24, 130);
     combo(
         170,
@@ -640,7 +663,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
     check(CHECKS[0], 14, 142, 352, ID_CHECKS, c.fps_only_background);
 
     // Steam-like bar contents
-    group("Show in the Steam-like bar", 192, 124);
+    group("Show in the Steam-like bar", OVERLAY_GROUPS[1]);
     let on = [
         c.show_fps,
         c.show_low,
@@ -658,7 +681,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
         check(
             CHECKS[i + 1],
             14 + col * 180,
-            20 + row * 20,
+            BAR_ROW.0 + row * BAR_ROW.1,
             170,
             ID_CHECKS + 1 + i as i32,
             v,
@@ -666,7 +689,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
     }
 
     // Game detection
-    group("Game detection", 324, 124);
+    group("Game detection", OVERLAY_GROUPS[2]);
     let min_fps = (c.min_fps.round() as u32).to_string();
     label("Minimum FPS", 14, 22, 130);
     slider(150, 18, ID_MIN_FPS_SLIDER, 1, 240, &min_fps);
@@ -687,7 +710,10 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
     check(CHECKS[11], 14, 98, 352, ID_CHECKS + 11, c.fullscreen_only);
 
     // Hotkeys (in game only)
-    group("Hotkeys (work only while a game is in front)", 456, 54);
+    group(
+        "Hotkeys (work only while a game is in front)",
+        OVERLAY_GROUPS[3],
+    );
     // `mute` adds "(none)" first and A–Z after the fixed keys; Save never
     // rewrites a configured code that is in neither list.
     let keys = |key: u8, mute: bool| {
@@ -717,7 +743,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
 
     // Mute page
     page(MUTE);
-    group("Background muting", 0, 200);
+    group("Background muting", MUTE_GROUP);
     label(
         "Mute while not focused (exe names, comma separated)",
         14,
@@ -1033,6 +1059,17 @@ fn show_page(sel: usize) {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_CTLCOLORSTATIC => {
+            // Under visual styles the tab pane is drawn in the window colour, but
+            // a STATIC defaults to the dialog face: paint its text on the pane's
+            // own (window-coloured) brush instead of a grey box.
+            // SAFETY: plain background-mode and colour-brush calls on the DC the
+            // control passed us; the brush is a system brush we do not own.
+            unsafe {
+                SetBkMode(HDC(lp.0 as _), TRANSPARENT);
+                LRESULT(GetSysColorBrush(COLOR_WINDOW).0 as isize)
+            }
+        }
         WM_COMMAND => {
             let id = (wp.0 & 0xFFFF) as i32;
             if (wp.0 >> 16) as u32 == EN_CHANGE {
@@ -1202,6 +1239,27 @@ mod tests {
         assert_eq!(slider_pos("0", 1, 240), Some(1));
         assert_eq!(slider_pos("", 1, 240), None);
         assert_eq!(slider_pos("abc", 50, 200), None);
+    }
+
+    // Regression: page controls used their group-relative y as a page y, so the
+    // Steam-bar, Game detection and Hotkeys rows piled up over Appearance.
+    #[test]
+    fn page_controls_fit_their_groups_and_the_tab_pane() {
+        // Bottom of the lowest control in each `OVERLAY_GROUPS` box, group-relative.
+        let content_bottom = [164, BAR_ROW.0 + 4 * BAR_ROW.1 + CHECK_H, 120, 45];
+        for (i, &(top, h)) in OVERLAY_GROUPS.iter().enumerate() {
+            assert!(content_bottom[i] <= h, "group {i} too short");
+            if let Some(&(next, _)) = OVERLAY_GROUPS.get(i + 1) {
+                assert!(top + h <= next, "groups {i} and {} overlap", i + 1);
+            }
+        }
+        let (last_top, last_h) = OVERLAY_GROUPS[3];
+        assert!(
+            PAGE_Y + last_top + last_h <= TAB.1 + TAB.3,
+            "pane too short"
+        );
+        assert!(PAGE_Y + MUTE_GROUP.0 + MUTE_GROUP.1 <= TAB.1 + TAB.3);
+        assert!(PAGE_X + GROUP_W <= TAB.0 + TAB.2, "group box past the pane");
     }
 
     #[test]
