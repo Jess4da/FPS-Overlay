@@ -31,7 +31,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PCWSTR, w};
 
-use crate::config::{self, Config, Corner, Layout};
+use crate::config::{self, Config, Corner, Layout, Modifier};
 
 // Raw control constants (avoids pulling the Controls feature for a few values).
 const BS_AUTOCHECKBOX: u32 = 0x3;
@@ -79,6 +79,9 @@ const ID_ADD_IGNORE: i32 = 109;
 /// Background muting: the exe list and its "Add…" button.
 const ID_MUTE: i32 = 130;
 const ID_ADD_MUTE: i32 = 131;
+/// Mute hotkey: modifier combo (item data = index into `MODS`) and key combo.
+const ID_MUTE_KEY: i32 = 132;
+const ID_MUTE_MOD: i32 = 133;
 /// Checkboxes, in `Fields::checks` order.
 const ID_CHECKS: i32 = 110;
 /// Tab control and the sliders beside the number boxes.
@@ -115,6 +118,14 @@ const CHECKS: [&str; 12] = [
     "Process name",
     "Fahrenheit",
     "Only show in fullscreen / borderless",
+];
+
+/// Mute chord modifiers, in `Fields::mute_mod` (index) order.
+const MODS: [(&str, Modifier); 4] = [
+    ("None", Modifier::None),
+    ("Alt", Modifier::Alt),
+    ("Ctrl", Modifier::Ctrl),
+    ("Shift", Modifier::Shift),
 ];
 
 const LAYOUTS: [&str; 2] = ["Steam-like bar", "FPS only"];
@@ -156,6 +167,9 @@ pub struct Fields<'a> {
     pub checks: [bool; 12],
     pub toggle_key: u8,
     pub exit_key: u8,
+    /// Mute chord key (`0` = off) and modifier index into `MODS`.
+    pub mute_key: u8,
+    pub mute_mod: usize,
 }
 
 /// Validates the form; the error names the field so the user can fix it.
@@ -173,6 +187,10 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
     if f.toggle_key == f.exit_key {
         return Err("The show/hide key and the exit key must be different.".into());
     }
+    if f.mute_key != 0 && (f.mute_key == f.toggle_key || f.mute_key == f.exit_key) {
+        return Err("The mute key must differ from the show/hide and exit keys.".into());
+    }
+    let mute_mod = MODS.get(f.mute_mod).map_or(Modifier::None, |m| m.1);
     let [
         fps_bg,
         fps,
@@ -218,8 +236,8 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         mute: config::ignore_list(f.mute),
         toggle_key: f.toggle_key,
         exit_key: f.exit_key,
-        mute_key: 77,
-        mute_mod: config::Modifier::Alt,
+        mute_key: f.mute_key,
+        mute_mod,
     })
 }
 
@@ -670,12 +688,18 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
 
     // Hotkeys (in game only)
     group("Hotkeys (work only while a game is in front)", 456, 54);
-    let keys = |key: u8| {
-        let mut items: Vec<(String, usize)> = KEYS
-            .iter()
-            .map(|(n, v)| (n.to_string(), *v as usize))
-            .collect();
-        if !KEYS.iter().any(|(_, v)| *v == key) {
+    // `mute` adds "(none)" first and A–Z after the fixed keys; Save never
+    // rewrites a configured code that is in neither list.
+    let keys = |key: u8, mute: bool| {
+        let mut items: Vec<(String, usize)> = Vec::new();
+        if mute {
+            items.push(("(none)".to_string(), 0));
+        }
+        items.extend(KEYS.iter().map(|(n, v)| (n.to_string(), *v as usize)));
+        if mute {
+            items.extend((b'A'..=b'Z').map(|k| ((k as char).to_string(), k as usize)));
+        }
+        if !items.iter().any(|(_, v)| *v == key as usize) {
             items.push((format!("Key code {key}"), key as usize));
         }
         let sel = items
@@ -685,13 +709,13 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
         (items, sel)
     };
     label("Show/hide", 14, 22, 70);
-    let (items, sel) = keys(c.toggle_key);
+    let (items, sel) = keys(c.toggle_key, false);
     combo(86, 20, 100, ID_TOGGLE, &items, sel);
     label("Exit", 204, 22, 40);
-    let (items, sel) = keys(c.exit_key);
+    let (items, sel) = keys(c.exit_key, false);
     combo(246, 20, 120, ID_EXIT, &items, sel);
 
-    // Mute page (Task 4 adds the hotkey row below this list)
+    // Mute page
     page(MUTE);
     group("Background muting", 0, 200);
     label(
@@ -712,6 +736,16 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
         25,
         ID_ADD_MUTE,
     );
+    label("Mute focused game", 14, 74, 130);
+    let mods = MODS
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _))| (n.to_string(), i))
+        .collect::<Vec<_>>();
+    let sel = MODS.iter().position(|(_, m)| *m == c.mute_mod).unwrap_or(0);
+    combo(150, 72, 80, ID_MUTE_MOD, &mods, sel);
+    let (items, sel) = keys(c.mute_key, true);
+    combo(240, 72, 120, ID_MUTE_KEY, &items, sel);
 
     // Shared bottom row, below the tab control and on no page.
     cur.set(None);
@@ -782,7 +816,20 @@ unsafe fn combo_value(hwnd: HWND, id: i32) -> usize {
 
 unsafe fn save(hwnd: HWND) {
     // SAFETY: reads our own controls.
-    let (scale, opacity, min_fps, ignore, mute, checks, layout, position, toggle, exit) = unsafe {
+    let (
+        scale,
+        opacity,
+        min_fps,
+        ignore,
+        mute,
+        checks,
+        layout,
+        position,
+        toggle,
+        exit,
+        mute_key,
+        mute_mod,
+    ) = unsafe {
         let mut checks = [false; 12];
         for (i, c) in checks.iter_mut().enumerate() {
             *c = SendMessageW(item(hwnd, ID_CHECKS + i as i32), BM_GETCHECK, None, None).0 == 1;
@@ -798,6 +845,8 @@ unsafe fn save(hwnd: HWND) {
             combo_value(hwnd, ID_POSITION),
             combo_value(hwnd, ID_TOGGLE) as u8,
             combo_value(hwnd, ID_EXIT) as u8,
+            combo_value(hwnd, ID_MUTE_KEY) as u8,
+            combo_value(hwnd, ID_MUTE_MOD),
         )
     };
     let fields = Fields {
@@ -811,6 +860,8 @@ unsafe fn save(hwnd: HWND) {
         checks,
         toggle_key: toggle,
         exit_key: exit,
+        mute_key,
+        mute_mod,
     };
     let cfg = match from_fields(&fields) {
         Ok(c) => c,
@@ -1083,6 +1134,8 @@ mod tests {
             ],
             toggle_key: toggle,
             exit_key: exit,
+            mute_key: 0x4D,
+            mute_mod: 1,
         }
     }
 
@@ -1100,6 +1153,7 @@ mod tests {
         assert!(!c.show_gpu_clock && c.show_vram && !c.show_ram && c.show_process && c.fahrenheit);
         assert!(c.fullscreen_only);
         assert_eq!((c.toggle_key, c.exit_key), (0x70, 0x7B));
+        assert_eq!((c.mute_key, c.mute_mod), (0x4D, Modifier::Alt));
         // Saved form must survive the ini round trip unchanged.
         assert_eq!(config::parse(&config::to_ini(&c)), c);
     }
@@ -1154,5 +1208,17 @@ mod tests {
     fn same_hotkey_rejected() {
         assert!(from_fields(&fields("100", 0x2D, 0x2D)).is_err());
         assert!(from_fields(&fields("100", 0, 0x2D)).is_err());
+    }
+
+    #[test]
+    fn mute_key_clashing_with_other_hotkeys_rejected() {
+        let mut f = fields("100", 0x70, 0x7B);
+        f.mute_key = 0x70;
+        assert!(from_fields(&f).is_err());
+        f.mute_key = 0x7B;
+        f.mute_mod = 0;
+        assert!(from_fields(&f).is_err());
+        f.mute_key = 0; // disabled: never clashes
+        assert_eq!(from_fields(&f).unwrap().mute_key, 0);
     }
 }
