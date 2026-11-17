@@ -21,10 +21,14 @@ pub trait Mixer {
 /// their exe. `stale` holds exes whose mute may still be in effect but whose
 /// session was lost (gone, failed unmute, previous run): Windows persists
 /// per-app mute, so the next muted session of such an exe is re-adopted.
+/// `held` is the hotkey hold set: those exes stay muted even in the foreground.
+/// Holding is a live decision, so it is never persisted; an exe it muted is
+/// persisted through `owned`/`stale` like any other crash-recovery entry.
 #[derive(Default)]
 pub struct Muter {
     owned: HashMap<String, String>,
     stale: HashSet<String>,
+    held: HashSet<String>,
 }
 
 impl Muter {
@@ -33,6 +37,7 @@ impl Muter {
         Self {
             owned: HashMap::new(),
             stale: stale.into_iter().collect(),
+            held: HashSet::new(),
         }
     }
 
@@ -41,8 +46,31 @@ impl Muter {
         self.owned.values().chain(&self.stale).cloned().collect()
     }
 
-    /// Mute listed apps that are not in the foreground; unmute owned ones that
-    /// are. Unlisted sessions are never touched.
+    /// Add or remove `exe` from the hold set; returns whether it is now held.
+    // ponytail: no caller until the mute hotkey lands; drop the allow with it.
+    #[allow(dead_code)]
+    pub fn toggle_hold(&mut self, exe: &str) -> bool {
+        if self.held.remove(exe) {
+            return false;
+        }
+        self.held.insert(exe.to_string());
+        true
+    }
+
+    #[allow(dead_code)]
+    pub fn is_holding(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// Drop holds failing `keep`. `owned` mutes stay until the next
+    /// `reconcile` sees them unwanted.
+    #[allow(dead_code)]
+    pub fn retain_holds(&mut self, keep: impl FnMut(&String) -> bool) {
+        self.held.retain(keep);
+    }
+
+    /// Mute sessions that are either listed and not in the foreground or held;
+    /// unmute owned ones that are neither. Everything else is left alone.
     pub fn reconcile(&mut self, m: &mut impl Mixer, list: &[String], fg: Option<&str>) {
         let sessions = m.sessions();
         let present: HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
@@ -54,7 +82,7 @@ impl Muter {
             }
         });
         for s in &sessions {
-            if s.muted && listed(list, &s.exe) && self.stale.contains(&s.exe) {
+            if s.muted && self.stale.contains(&s.exe) {
                 self.owned
                     .entry(s.id.clone())
                     .or_insert_with(|| s.exe.clone());
@@ -65,10 +93,9 @@ impl Muter {
             self.stale.remove(&s.exe);
         }
         for s in &sessions {
-            if !listed(list, &s.exe) {
-                continue;
-            }
-            if fg != Some(s.exe.as_str()) {
+            let want =
+                (listed(list, &s.exe) && fg != Some(s.exe.as_str())) || self.held.contains(&s.exe);
+            if want {
                 if !s.muted && m.set_mute(&s.id, true) {
                     self.owned.insert(s.id.clone(), s.exe.clone());
                 }
@@ -264,11 +291,102 @@ mod tests {
     }
 
     #[test]
+    fn hold_mutes_focused_unlisted_exe() {
+        let mut m = FakeMixer::new(&[("g", "game.exe", false), ("s", "spotify.exe", false)]);
+        let mut muter = Muter::default();
+        assert!(muter.toggle_hold("game.exe"));
+        muter.reconcile(&mut m, &[], Some("game.exe"));
+        assert_eq!(m.calls, calls(&[("g", true)]));
+        assert_eq!(muter.persisted(), set(&["game.exe"]));
+    }
+
+    #[test]
+    fn unhold_unmutes_owned() {
+        let mut m = FakeMixer::new(&[("g", "game.exe", false)]);
+        let mut muter = Muter::default();
+        muter.toggle_hold("game.exe");
+        muter.reconcile(&mut m, &[], Some("game.exe"));
+        assert!(!muter.toggle_hold("game.exe"));
+        assert!(!muter.is_holding());
+        muter.reconcile(&mut m, &[], Some("game.exe"));
+        assert_eq!(m.calls, calls(&[("g", true), ("g", false)]));
+        assert!(muter.persisted().is_empty());
+    }
+
+    #[test]
+    fn hold_respects_user_mute() {
+        let mut m = FakeMixer::new(&[("g", "game.exe", true)]);
+        let mut muter = Muter::default();
+        muter.toggle_hold("game.exe");
+        muter.reconcile(&mut m, &[], Some("game.exe"));
+        muter.toggle_hold("game.exe");
+        muter.reconcile(&mut m, &[], Some("game.exe"));
+        assert!(m.calls.is_empty());
+    }
+
+    #[test]
+    fn hold_overrides_focus_for_listed_exe() {
+        let l = list(&["game.exe"]);
+        let mut m = FakeMixer::new(&[("g", "game.exe", false)]);
+        let mut muter = Muter::default();
+        muter.toggle_hold("game.exe");
+        muter.reconcile(&mut m, &l, Some("game.exe"));
+        muter.toggle_hold("game.exe");
+        muter.reconcile(&mut m, &l, Some("other.exe")); // still listed + background: stays muted
+        assert_eq!(m.calls, calls(&[("g", true)]));
+    }
+
+    #[test]
+    fn hold_mutes_session_that_appears_later() {
+        let mut m = FakeMixer::new(&[]);
+        let mut muter = Muter::default();
+        muter.toggle_hold("game.exe");
+        muter.reconcile(&mut m, &[], Some("game.exe"));
+        m.sessions = FakeMixer::new(&[("g", "game.exe", false)]).sessions;
+        muter.reconcile(&mut m, &[], Some("game.exe"));
+        assert_eq!(m.calls, calls(&[("g", true)]));
+    }
+
+    #[test]
+    fn release_unmutes_held() {
+        let mut m = FakeMixer::new(&[("g", "game.exe", false)]);
+        let mut muter = Muter::default();
+        muter.toggle_hold("game.exe");
+        muter.reconcile(&mut m, &[], None);
+        muter.release(&mut m);
+        assert_eq!(m.calls, calls(&[("g", true), ("g", false)]));
+    }
+
+    // Regression guard for crash recovery of a held, unlisted exe.
+    #[test]
+    fn stale_unlisted_exe_unmuted_on_start() {
+        let mut m = FakeMixer::new(&[("g", "game.exe", true)]);
+        let mut muter = Muter::with_stale(["game.exe".to_string()]);
+        muter.reconcile(&mut m, &[], Some("other.exe"));
+        assert_eq!(m.calls, calls(&[("g", false)]));
+        assert!(muter.persisted().is_empty());
+    }
+
+    #[test]
+    fn dropped_hold_unmutes_on_next_reconcile() {
+        let mut m = FakeMixer::new(&[("g", "game.exe", false), ("h", "other.exe", false)]);
+        let mut muter = Muter::default();
+        muter.toggle_hold("game.exe");
+        muter.toggle_hold("other.exe");
+        muter.reconcile(&mut m, &[], None);
+        muter.retain_holds(|e| e != "game.exe");
+        muter.reconcile(&mut m, &[], None);
+        assert_eq!(m.calls, calls(&[("g", true), ("h", true), ("g", false)]));
+        assert!(muter.is_holding());
+    }
+
+    // Regression: a stale exe dropped from the mute list is unmuted on start.
+    #[test]
     fn startup_stale_adopts_muted() {
         let mut m = FakeMixer::new(&[("g", "game.exe", true), ("x", "x.exe", true)]);
         let mut muter = Muter::with_stale(["game.exe".to_string(), "x.exe".to_string()]);
         muter.reconcile(&mut m, &list(&["game.exe"]), Some("game.exe"));
-        assert_eq!(m.calls, calls(&[("g", false)]));
+        assert_eq!(m.calls, calls(&[("g", false), ("x", false)]));
         assert!(muter.persisted().is_empty());
     }
 
