@@ -181,6 +181,8 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         mute: config::ignore_list(f.mute),
         toggle_key: f.toggle_key,
         exit_key: f.exit_key,
+        mute_key: 77,
+        mute_mod: config::Modifier::Alt,
     })
 }
 
