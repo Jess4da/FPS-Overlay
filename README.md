@@ -29,13 +29,21 @@ the key.
 | Action | Default key |
 |---|---|
 | Show/hide the overlay | `Insert` (45) |
+| Mute/unmute the focused game | `Alt+M` |
 | Exit | `End` (35) |
+
+`Alt+M` holds the app of the focused window muted, whether you alt-tab away or
+not, until you press it again on that app or exit FPS Overlay. It is a live
+hold, not a persistent one.
 
 A tray icon ("FPS Overlay") is always present:
 
 - **Double-click** it to open **Settings**: every `config.ini` option in one
-  window. **Save** validates, writes `config.ini` and applies immediately (no
-  restart); **Cancel** discards.
+  window, in an **Overlay** tab (appearance, bar, game detection, hotkeys) and a
+  **Mute** tab (the mute list and the mute hotkey). Scale, Background opacity
+  and Minimum FPS have a slider plus a number box; the Min FPS slider tops out
+  at 240 but the box accepts up to 1000. **Save** validates, writes `config.ini`
+  and applies immediately (no restart); **Cancel** discards.
 - **Right-click** it for **Settings…**, **Start with Windows** (checkmark toggle;
   also a checkbox in Settings; off by default) and **Exit FPS Overlay**. Start
   with Windows creates a Task Scheduler logon task named `FPS Overlay` that runs
@@ -96,9 +104,11 @@ game window.
 | `min_fps` | `20` | 1–1000; a foreground app below this is not treated as a game |
 | `fullscreen_only` | `0` | `0`/`1`; show only while the game covers its whole monitor (exclusive fullscreen or borderless). Detection still runs for windowed games, the overlay just stays hidden |
 | `ignore` | `explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe` | comma-separated exe names |
-| `mute` | empty | comma-separated exe names to mute while not focused. Empty = no audio code runs at all |
+| `mute` | empty | comma-separated exe names to mute while not focused. Empty = no audio code runs until you press the mute hotkey |
 | `toggle_key` | `45` (Insert) | 1–254 (virtual-key code) |
 | `exit_key` | `35` (End) | 1–254 (virtual-key code) |
+| `mute_key` | `77` (M) | 0–254 (virtual-key code); `0` = hotkey off |
+| `mute_mod` | `alt` | `none`, `alt`, `ctrl`, `shift` |
 
 Missing file → defaults are written. An out-of-range or unparsable value falls
 back to the default for that key.
@@ -138,10 +148,11 @@ git tag v0.5.0 && git push origin v0.5.0
 
 Release build measured on this machine:
 
-- `fps-overlay.exe`: 517,632 bytes (~506 KB; budget 550 KB), no DLLs to ship.
-- With `mute` empty (and no `muted.txt`), COM is never initialised, `ole32`,
-  `wtsapi32` and the audio stack (`mmdevapi.dll`) are never loaded and no extra
-  timer runs. With `mute` set, muting is event-driven (foreground change, audio
+- `fps-overlay.exe`: 531,456 bytes (~519 KB; budget 550 KB), no DLLs to ship.
+- With `mute` empty (and no `muted.txt`), COM is never initialised until you
+  first press the mute hotkey; `ole32`, `wtsapi32` and the audio stack
+  (`mmdevapi.dll`) stay unmapped and no extra timer runs. With `mute` set,
+  muting is event-driven (foreground change, audio
   session/device change, unlock) plus one 150 ms one-shot debounce per
   foreground change.
 - Import table: system DLLs only (`kernel32`, `user32`, `gdi32`, `shell32`,

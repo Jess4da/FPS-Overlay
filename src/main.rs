@@ -258,10 +258,18 @@ fn mute_menu_label(exe: &str, listed: bool) -> String {
     }
 }
 
-/// Spec: the audio machinery exists while there is a list to apply or a mute
-/// from an earlier run (or a failed unmute) still to undo.
-fn mute_wanted(list_empty: bool, persisted_empty: bool) -> bool {
-    !list_empty || !persisted_empty
+/// Spec: the audio machinery exists while there is a list to apply, a mute
+/// from an earlier run (or a failed unmute) still to undo, or a hold to keep
+/// (a held game with no session yet would otherwise lose `MuteState`).
+fn mute_wanted(list_empty: bool, persisted_empty: bool, holding: bool) -> bool {
+    !list_empty || !persisted_empty || holding
+}
+
+/// A hold can only be released by pressing the chord again on the same exe, so
+/// it is dead once the chord is off or the exe is ignored (an ignored exe is
+/// never a game, so its chord is never polled).
+fn hold_releasable(exe: &str, cfg: &Config) -> bool {
+    cfg.mute_key != 0 && !cfg.ignore.iter().any(|i| i == exe)
 }
 
 /// Foreground exe offered in the tray. The tray click itself focuses the
@@ -346,7 +354,8 @@ struct App {
     last_fg_exe: Option<String>,
     mute: Option<MuteState>,
     last_poll: u64,
-    keys: (bool, bool),
+    /// Previous tick's `[toggle, exit, mute]` chord state.
+    keys: [bool; 3],
     keys_armed: bool,
     freq: i64,
     t0: i64,
@@ -492,10 +501,16 @@ impl App {
     /// the gate for the current foreground so ignore list / min FPS / layout take
     /// effect immediately.
     fn reconfigure(&mut self, cfg: Config) {
+        // ponytail: a held game blips unmuted on Save; skip held exes in this release if it bites.
         // Before the swap, so apps removed from `mute` are unmuted.
         self.mute_release();
         self.overlay.set_config(&cfg);
         self.cfg = cfg;
+        // A hold the chord can no longer reach (key off, exe now ignored) would
+        // stay muted forever: drop it; the reconcile below unmutes it.
+        if let Some(m) = self.mute.as_mut() {
+            m.muter.retain_holds(|e| hold_releasable(e, &self.cfg));
+        }
         self.hide();
         self.anchor_mon = HMONITOR::default();
         self.stats = Stats::default();
@@ -510,33 +525,71 @@ impl App {
     }
 
     /// Create or drop `MuteState` per `mute_wanted`, reconciling in between.
-    /// With `mute` empty and no `muted.txt`, nothing (COM, audio, WTS) is touched.
+    /// With `mute` empty, no `muted.txt` and no hold, nothing (COM, audio, WTS)
+    /// is touched.
     fn sync_mute(&mut self) {
         if self.mute.is_none() {
-            let stale = config::load_owned();
-            if !mute_wanted(self.cfg.mute.is_empty(), stale.is_empty()) || !com_init() {
+            let want = mute_wanted(
+                self.cfg.mute.is_empty(),
+                config::load_owned().is_empty(),
+                false,
+            );
+            if !want || !self.create_mute() {
                 return;
             }
-            let Ok(mixer) = audio::WasapiMixer::new() else {
-                return;
-            };
-            let muter = mute::Muter::with_stale(stale);
-            let saved = muter.persisted();
-            // SAFETY: our own window; unregistered in `drop_mute`. Failure only
-            // loses the unlock reapply.
-            let _ = unsafe { WTSRegisterSessionNotification(self.hwnd, NOTIFY_FOR_THIS_SESSION) };
-            self.mute = Some(MuteState {
-                mixer,
-                muter,
-                saved,
-            });
         }
         self.mute_reconcile();
         if let Some(m) = &self.mute
-            && !mute_wanted(self.cfg.mute.is_empty(), m.muter.persisted().is_empty())
+            && !mute_wanted(
+                self.cfg.mute.is_empty(),
+                m.muter.persisted().is_empty(),
+                m.muter.is_holding(),
+            )
         {
             self.drop_mute();
         }
+    }
+
+    /// Build `MuteState` (COM STA, mixer, `muted.txt` adoption) regardless of
+    /// `mute_wanted`: the mute hotkey needs it on the first press. `true` when
+    /// it exists afterwards.
+    fn create_mute(&mut self) -> bool {
+        if self.mute.is_some() {
+            return true;
+        }
+        if !com_init() {
+            return false;
+        }
+        let Ok(mixer) = audio::WasapiMixer::new() else {
+            return false;
+        };
+        let muter = mute::Muter::with_stale(config::load_owned());
+        let saved = muter.persisted();
+        // SAFETY: our own window; unregistered in `drop_mute`. Failure only
+        // loses the unlock reapply.
+        let _ = unsafe { WTSRegisterSessionNotification(self.hwnd, NOTIFY_FOR_THIS_SESSION) };
+        self.mute = Some(MuteState {
+            mixer,
+            muter,
+            saved,
+        });
+        true
+    }
+
+    /// Mute hotkey: hold the foreground exe muted whether focused or not, until
+    /// the chord is pressed on it again or the overlay exits.
+    fn toggle_hold(&mut self) {
+        let Some(exe) = self.fg_exe.clone() else {
+            return;
+        };
+        if !self.create_mute() {
+            return;
+        }
+        if let Some(m) = self.mute.as_mut() {
+            m.muter.toggle_hold(&exe);
+        }
+        // Reconciles (mutes/unmutes) and drops `MuteState` when nothing is wanted.
+        self.sync_mute();
     }
 
     fn mute_reconcile(&mut self) {
@@ -663,18 +716,24 @@ impl App {
     /// Returns true when the exit key asked the process to quit.
     fn hotkeys(&mut self) -> bool {
         let down = |vk: u8| (unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000) != 0;
-        let cur = (down(self.cfg.toggle_key), down(self.cfg.exit_key));
+        let mute = self.cfg.mute_key != 0
+            && down(self.cfg.mute_key)
+            && self.cfg.mute_mod.vk().is_none_or(down);
+        let cur = [down(self.cfg.toggle_key), down(self.cfg.exit_key), mute];
         if !self.keys_armed {
             // A key already held when the overlay appears must not act.
             self.keys = cur;
             self.keys_armed = true;
             return false;
         }
-        let (toggle, exit) = edges(self.keys, cur);
+        let [toggle, exit, mute] = edges(self.keys, cur);
         self.keys = cur;
         if toggle {
             let out = self.gate.toggle();
             self.apply(out);
+        }
+        if mute {
+            self.toggle_hold();
         }
         if exit {
             // SAFETY: posts to this thread's queue, breaking GetMessageW.
@@ -751,9 +810,9 @@ fn needs_draw(shown: bool, anchor_moved: bool, content_changed: bool) -> bool {
     !shown || anchor_moved || content_changed
 }
 
-/// Up→down edges for `(toggle, exit)`: a key held across ticks fires once.
-fn edges(prev: (bool, bool), cur: (bool, bool)) -> (bool, bool) {
-    (cur.0 && !prev.0, cur.1 && !prev.1)
+/// Up→down edges for `[toggle, exit, mute]`: a key held across ticks fires once.
+fn edges(prev: [bool; 3], cur: [bool; 3]) -> [bool; 3] {
+    [cur[0] && !prev[0], cur[1] && !prev[1], cur[2] && !prev[2]]
 }
 
 /// Milliseconds from `then` to `now` on a QPC clock of `freq` ticks/s.
@@ -950,7 +1009,7 @@ fn main() {
         last_fg_exe: None,
         mute: None,
         last_poll: 0,
-        keys: (false, false),
+        keys: [false; 3],
         keys_armed: false,
         freq,
         t0,
@@ -1231,12 +1290,32 @@ mod tests {
 
     #[test]
     fn held_key_fires_once() {
-        assert_eq!(edges((false, false), (true, false)), (true, false));
-        assert_eq!(edges((true, false), (true, false)), (false, false));
-        assert_eq!(edges((true, false), (false, false)), (false, false));
-        assert_eq!(edges((false, true), (false, true)), (false, false));
+        assert_eq!(
+            edges([false, false, false], [true, false, false]),
+            [true, false, false]
+        );
+        assert_eq!(
+            edges([true, false, false], [true, false, false]),
+            [false, false, false]
+        );
+        assert_eq!(
+            edges([true, false, false], [false, false, false]),
+            [false, false, false]
+        );
+        assert_eq!(
+            edges([false, true, false], [false, true, false]),
+            [false, false, false]
+        );
         // Arming with the key already down suppresses the edge.
-        assert_eq!(edges((true, true), (true, true)), (false, false));
+        assert_eq!(
+            edges([true, true, true], [true, true, true]),
+            [false, false, false]
+        );
+        // The mute chord is its own edge, in the third slot.
+        assert_eq!(
+            edges([false, false, false], [false, false, true]),
+            [false, false, true]
+        );
     }
 
     #[test]
@@ -1259,11 +1338,32 @@ mod tests {
 
     #[test]
     fn mute_state_wanted_for_list_or_leftover_mutes() {
-        assert!(!mute_wanted(true, true)); // idle: no COM at all
-        assert!(mute_wanted(false, true));
+        assert!(!mute_wanted(true, true, false)); // idle: no COM at all
+        assert!(mute_wanted(true, true, true)); // a hold alone keeps the mixer
+        assert!(mute_wanted(false, true, false));
         // List emptied but a mute (crash, failed unmute) is still to undo.
-        assert!(mute_wanted(true, false));
-        assert!(mute_wanted(false, false));
+        assert!(mute_wanted(true, false, false));
+        assert!(mute_wanted(false, false, false));
+    }
+
+    #[test]
+    fn hold_unreleasable_when_key_off_or_exe_ignored() {
+        let c = Config::default();
+        assert!(hold_releasable("game.exe", &c));
+        assert!(!hold_releasable(
+            "game.exe",
+            &Config {
+                mute_key: 0,
+                ..c.clone()
+            }
+        ));
+        assert!(!hold_releasable(
+            "game.exe",
+            &Config {
+                ignore: vec!["game.exe".into()],
+                ..c
+            }
+        ));
     }
 
     #[test]

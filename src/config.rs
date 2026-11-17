@@ -15,6 +15,26 @@ pub enum Layout {
     FpsOnly,
 }
 
+/// Modifier half of the mute chord. `vk` is the `GetAsyncKeyState` code.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Modifier {
+    None,
+    Alt,
+    Ctrl,
+    Shift,
+}
+
+impl Modifier {
+    pub fn vk(self) -> Option<u8> {
+        match self {
+            Modifier::None => None,
+            Modifier::Alt => Some(0x12),
+            Modifier::Ctrl => Some(0x11),
+            Modifier::Shift => Some(0x10),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub layout: Layout,
@@ -38,6 +58,9 @@ pub struct Config {
     pub ignore: Vec<String>,
     /// Exes to mute while not in the foreground (user list).
     pub mute: Vec<String>,
+    /// Mute chord: virtual-key code and modifier. `0` disables the chord.
+    pub mute_key: u8,
+    pub mute_mod: Modifier,
     pub toggle_key: u8,
     pub exit_key: u8,
 }
@@ -65,6 +88,8 @@ ignore=explorer.exe,dwm.exe,chrome.exe,msedge.exe,firefox.exe,discord.exe
 mute=
 toggle_key=45
 exit_key=35
+mute_key=77
+mute_mod=alt
 ";
 
 impl Default for Config {
@@ -98,6 +123,8 @@ impl Default for Config {
             .map(String::from)
             .to_vec(),
             mute: Vec::new(),
+            mute_key: 77,
+            mute_mod: Modifier::Alt,
             toggle_key: 45,
             exit_key: 35,
         }
@@ -217,11 +244,17 @@ pub fn to_ini(c: &Config) -> String {
         Corner::BottomLeft => "bottom-left",
         Corner::BottomRight => "bottom-right",
     };
+    let mute_mod = match c.mute_mod {
+        Modifier::None => "none",
+        Modifier::Alt => "alt",
+        Modifier::Ctrl => "ctrl",
+        Modifier::Shift => "shift",
+    };
     format!(
         "[Overlay]\nlayout={layout}\nfps_only_background={}\nposition={position}\nscale={}\n\
          background_opacity={}\nshow_fps={}\nshow_low={}\nshow_cpu={}\nshow_cpu_clock={}\nshow_gpu={}\nshow_gpu_clock={}\n\
          show_vram={}\nshow_ram={}\nshow_process={}\nfahrenheit={}\nmin_fps={}\nfullscreen_only={}\n\
-         ignore={}\nmute={}\ntoggle_key={}\nexit_key={}\n",
+         ignore={}\nmute={}\ntoggle_key={}\nexit_key={}\nmute_key={}\nmute_mod={mute_mod}\n",
         b(c.fps_only_background),
         (c.scale * 100.0).round() as u32,
         (c.background_opacity * 100.0).round() as u32,
@@ -241,6 +274,7 @@ pub fn to_ini(c: &Config) -> String {
         c.mute.join(","),
         c.toggle_key,
         c.exit_key,
+        c.mute_key,
     )
 }
 
@@ -289,6 +323,19 @@ fn set(c: &mut Config, key: &str, val: &str) {
         "mute" => c.mute = ignore_list(&v),
         "toggle_key" => key_code(&v, &mut c.toggle_key),
         "exit_key" => key_code(&v, &mut c.exit_key),
+        // 0 disables the chord, so unlike `key_code` this accepts it.
+        "mute_key" => {
+            if let Ok(n @ 0..=254) = v.parse::<u32>() {
+                c.mute_key = n as u8;
+            }
+        }
+        "mute_mod" => match v.as_str() {
+            "none" => c.mute_mod = Modifier::None,
+            "alt" => c.mute_mod = Modifier::Alt,
+            "ctrl" => c.mute_mod = Modifier::Ctrl,
+            "shift" => c.mute_mod = Modifier::Shift,
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -350,6 +397,8 @@ mod tests {
             ignore: vec!["foo.exe".into(), "bar.exe".into()],
             toggle_key: 112,
             exit_key: 113,
+            mute_key: 0x4E,
+            mute_mod: Modifier::None,
             ..Config::default()
         };
         assert_eq!(parse(&to_ini(&c)), c);
@@ -465,6 +514,32 @@ mod tests {
     #[test]
     fn missing_mute_key_means_empty() {
         assert!(parse("[Overlay]\ntoggle_key=112").mute.is_empty());
+    }
+
+    #[test]
+    fn mute_hotkey_defaults_to_alt_m() {
+        let c = parse("");
+        assert_eq!((c.mute_key, c.mute_mod), (77, Modifier::Alt));
+    }
+
+    #[test]
+    fn mute_hotkey_round_trips_and_zero_disables() {
+        let c = Config {
+            mute_key: 0,
+            mute_mod: Modifier::Ctrl,
+            ..Config::default()
+        };
+        assert_eq!(parse(&to_ini(&c)), c);
+        let c = parse("mute_key=120\nmute_mod=Shift");
+        assert_eq!((c.mute_key, c.mute_mod), (120, Modifier::Shift));
+        assert_eq!(parse("mute_mod=none").mute_mod, Modifier::None);
+    }
+
+    #[test]
+    fn bad_mute_hotkey_values_fall_back() {
+        let c = parse("mute_key=300\nmute_mod=win");
+        assert_eq!((c.mute_key, c.mute_mod), (77, Modifier::Alt));
+        assert_eq!(parse("mute_key=-1").mute_key, 77);
     }
 
     /// Unique scratch dir per test: pid plus a counter, like BGMuter's tests.

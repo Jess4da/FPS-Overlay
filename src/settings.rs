@@ -3,13 +3,14 @@
 //! controls (visual styles via the manifest in build.rs); created on demand and
 //! fully destroyed on close, so it costs nothing while hidden.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    COLOR_BTNFACE, CreateFontIndirectW, DeleteObject, GetMonitorInfoW, HBRUSH, HFONT, HGDIOBJ,
-    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    COLOR_BTNFACE, COLOR_WINDOW, CreateFontIndirectW, DeleteObject, GetMonitorInfoW,
+    GetSysColorBrush, HBRUSH, HDC, HFONT, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint, SetBkMode, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
@@ -18,19 +19,20 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    EnumWindows, GWL_EXSTYLE, GetCursorPos, GetWindowLongW, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, HICON, HMENU, ICON_BIG, ICON_SMALL, IDC_ARROW,
-    IMAGE_ICON, IsWindowVisible, LR_DEFAULTCOLOR, LoadCursorW, LoadImageW, MB_ICONERROR,
-    MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MF_STRING, MessageBoxW, NONCLIENTMETRICSW,
-    RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_SHOWNORMAL, SendMessageW, SetForegroundWindow,
-    SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTALIGN, TrackPopupMenu, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_SETFONT, WM_SETICON, WNDCLASSW, WS_CAPTION,
-    WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_TOOLWINDOW, WS_MINIMIZEBOX, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    EnumWindows, GWL_EXSTYLE, GetCursorPos, GetDlgCtrlID, GetWindowLongW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HICON, HMENU, ICON_BIG,
+    ICON_SMALL, IDC_ARROW, IMAGE_ICON, IsWindowVisible, LR_DEFAULTCOLOR, LoadCursorW, LoadImageW,
+    MB_ICONERROR, MB_ICONWARNING, MB_OK, MESSAGEBOX_STYLE, MF_STRING, MessageBoxW,
+    NONCLIENTMETRICSW, RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
+    SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTALIGN,
+    TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC,
+    WM_DESTROY, WM_HSCROLL, WM_NOTIFY, WM_SETFONT, WM_SETICON, WNDCLASSW, WS_CAPTION, WS_CHILD,
+    WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_TOOLWINDOW, WS_MINIMIZEBOX,
+    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
-use crate::config::{self, Config, Corner, Layout};
+use crate::config::{self, Config, Corner, Layout, Modifier};
 
 // Raw control constants (avoids pulling the Controls feature for a few values).
 const BS_AUTOCHECKBOX: u32 = 0x3;
@@ -46,6 +48,21 @@ const CB_GETCURSEL: u32 = 0x147;
 const CB_GETITEMDATA: u32 = 0x150;
 const CB_SETCURSEL: u32 = 0x14E;
 const CB_SETITEMDATA: u32 = 0x151;
+/// Tab control (`SysTabControl32`), redirected to the comctl32 v6 assembly by
+/// the manifest in build.rs.
+const TCM_INSERTITEMW: u32 = 0x133E;
+const TCM_GETCURSEL: u32 = 0x130B;
+const TCIF_TEXT: u32 = 0x1;
+/// `NMHDR.code` values are negative; compare as i32.
+const TCN_SELCHANGE: i32 = -551;
+/// Trackbar (`msctls_trackbar32`), same v6 redirection.
+const TBM_GETPOS: u32 = 0x400;
+const TBM_SETPOS: u32 = 0x405;
+const TBM_SETRANGEMIN: u32 = 0x407;
+const TBM_SETRANGEMAX: u32 = 0x408;
+const TBM_SETPAGESIZE: u32 = 0x415;
+/// `WM_COMMAND` notification code in the high word.
+const EN_CHANGE: u32 = 0x300;
 
 const IDOK: i32 = 1;
 const IDCANCEL: i32 = 2;
@@ -63,8 +80,44 @@ const ID_ADD_IGNORE: i32 = 109;
 /// Background muting: the exe list and its "Add…" button.
 const ID_MUTE: i32 = 130;
 const ID_ADD_MUTE: i32 = 131;
+/// Mute hotkey: modifier combo (item data = index into `MODS`) and key combo.
+const ID_MUTE_KEY: i32 = 132;
+const ID_MUTE_MOD: i32 = 133;
 /// Checkboxes, in `Fields::checks` order.
 const ID_CHECKS: i32 = 110;
+/// Tab control and the sliders beside the number boxes.
+const ID_TABS: i32 = 140;
+const ID_SCALE_SLIDER: i32 = 141;
+const ID_OPACITY_SLIDER: i32 = 142;
+const ID_MIN_FPS_SLIDER: i32 = 143;
+
+/// Tab pages, in `TCM_INSERTITEMW` order; `OVERLAY` is the one shown first.
+const OVERLAY: usize = 0;
+const MUTE: usize = 1;
+const TABS: [&str; 2] = ["Overlay", "Mute"];
+/// Tab control rect `(x, y, w, h)` in client units.
+const TAB: (i32, i32, i32, i32) = (10, 8, 380, 542);
+/// Client-space origin of every tab page's controls.
+const PAGE_X: i32 = 14;
+const PAGE_Y: i32 = 34;
+/// Group boxes on the Overlay page, `(top, height)` in page units, in build
+/// order. Controls on a page are placed relative to their own group box.
+const OVERLAY_GROUPS: [(i32, i32); 4] = [(0, 176), (192, 124), (324, 124), (456, 54)];
+/// The Mute page's single group box.
+const MUTE_GROUP: (i32, i32) = (0, 200);
+/// Group-box width and the height of a checkbox.
+const GROUP_W: i32 = 372;
+const CHECK_H: i32 = 22;
+/// Steam-bar checkbox grid, group-relative: first row top and row step.
+const BAR_ROW: (i32, i32) = (20, 20);
+
+/// Number boxes with a slider beside them: (box id, slider id, min, max). The box
+/// keeps its own wider validation; the slider only ever shows the clamped value.
+const SLIDERS: [(i32, i32, u32, u32); 3] = [
+    (ID_SCALE, ID_SCALE_SLIDER, 50, 200),
+    (ID_OPACITY, ID_OPACITY_SLIDER, 0, 100),
+    (ID_MIN_FPS, ID_MIN_FPS_SLIDER, 1, 240),
+];
 const CHECKS: [&str; 12] = [
     "Background in FPS-only layout",
     "FPS",
@@ -78,6 +131,14 @@ const CHECKS: [&str; 12] = [
     "Process name",
     "Fahrenheit",
     "Only show in fullscreen / borderless",
+];
+
+/// Mute chord modifiers, in `Fields::mute_mod` (index) order.
+const MODS: [(&str, Modifier); 4] = [
+    ("None", Modifier::None),
+    ("Alt", Modifier::Alt),
+    ("Ctrl", Modifier::Ctrl),
+    ("Shift", Modifier::Shift),
 ];
 
 const LAYOUTS: [&str; 2] = ["Steam-like bar", "FPS only"];
@@ -119,6 +180,9 @@ pub struct Fields<'a> {
     pub checks: [bool; 12],
     pub toggle_key: u8,
     pub exit_key: u8,
+    /// Mute chord key (`0` = off) and modifier index into `MODS`.
+    pub mute_key: u8,
+    pub mute_mod: usize,
 }
 
 /// Validates the form; the error names the field so the user can fix it.
@@ -136,6 +200,10 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
     if f.toggle_key == f.exit_key {
         return Err("The show/hide key and the exit key must be different.".into());
     }
+    if f.mute_key != 0 && (f.mute_key == f.toggle_key || f.mute_key == f.exit_key) {
+        return Err("The mute key must differ from the show/hide and exit keys.".into());
+    }
+    let mute_mod = MODS.get(f.mute_mod).map_or(Modifier::None, |m| m.1);
     let [
         fps_bg,
         fps,
@@ -181,12 +249,31 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         mute: config::ignore_list(f.mute),
         toggle_key: f.toggle_key,
         exit_key: f.exit_key,
+        mute_key: f.mute_key,
+        mute_mod,
     })
+}
+
+/// Slider position for a box's text: `None` when it is not a number (the slider
+/// keeps its last position), else clamped to the slider's own range.
+fn slider_pos(text: &str, lo: u32, hi: u32) -> Option<u32> {
+    text.trim().parse::<u32>().ok().map(|n| n.clamp(lo, hi))
+}
+
+/// Start of `WM_NOTIFY`'s payload (same layout as the SDK's `NMHDR`, which needs
+/// the Controls feature); only these three fields are read.
+#[repr(C)]
+struct Nmhdr {
+    hwnd_from: HWND,
+    id_from: usize,
+    code: u32,
 }
 
 struct Ui {
     hwnd: HWND,
     font: HFONT,
+    /// Controls of each tab page, shown/hidden on `TCN_SELCHANGE`.
+    pages: [Vec<HWND>; 2],
     on_save: fn(Config),
 }
 
@@ -237,7 +324,7 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
 
         let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         let ex = WS_EX_CONTROLPARENT;
-        let (cw, ch) = (px(400), px(622));
+        let (cw, ch) = (px(400), px(588));
         let mut r = RECT {
             left: 0,
             top: 0,
@@ -286,7 +373,7 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
             dpi,
         );
         let font = CreateFontIndirectW(&ncm.lfMessageFont);
-        build(hwnd, font, cfg, &px);
+        let pages = build(hwnd, font, cfg, &px);
 
         for (kind, metric) in [(ICON_BIG, 32), (ICON_SMALL, 16)] {
             if let Ok(h) = LoadImageW(
@@ -310,6 +397,7 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
             *u.borrow_mut() = Some(Ui {
                 hwnd,
                 font,
+                pages,
                 on_save,
             })
         });
@@ -318,8 +406,32 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
     }
 }
 
-/// Creates and fills every control. `px` maps 96-DPI units to pixels.
-unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
+/// `TCITEMW` for `TCM_INSERTITEMW`; only `pszText` is used. The state fields
+/// precede the text (v6 layout, which the manifest redirects the class to).
+#[repr(C)]
+struct TcItemW {
+    mask: u32,
+    state: u32,
+    state_mask: u32,
+    text: *const u16,
+    text_max: i32,
+    image: i32,
+    lparam: isize,
+}
+
+/// Creates and fills every control. `px` maps 96-DPI units to pixels. Returns
+/// each tab page's controls, shown/hidden on `TCN_SELCHANGE`.
+unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) -> [Vec<HWND>; 2] {
+    // Page the following controls belong to; `None` is the shared bottom row.
+    let cur: Cell<Option<usize>> = Cell::new(None);
+    // Top of the group box being filled: a page control's y is relative to it.
+    let base: Cell<i32> = Cell::new(0);
+    let pages: RefCell<[Vec<HWND>; 2]> = RefCell::new([Vec::new(), Vec::new()]);
+    let page = |tab: usize| {
+        cur.set(Some(tab));
+        base.set(0);
+    };
+
     let ctl = |class: PCWSTR,
                text: &str,
                style: u32,
@@ -330,13 +442,20 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
                h: i32,
                id: i32| {
         let text = crate::wide(text);
+        let tab = cur.get();
+        let (x, y) = match tab {
+            Some(_) => (x + PAGE_X, y + base.get() + PAGE_Y),
+            None => (x, y),
+        };
+        // Overlay is the initially selected page, so only Mute starts hidden.
+        let shown = tab.is_none_or(|t| t == OVERLAY);
         // SAFETY: child of our window; text buffer outlives the call.
         unsafe {
             let h = CreateWindowExW(
                 ex,
                 class,
                 PCWSTR(text.as_ptr()),
-                WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | style),
+                WINDOW_STYLE(WS_CHILD.0 | style | if shown { WS_VISIBLE.0 } else { 0 }),
                 px(x),
                 px(y),
                 px(w),
@@ -347,6 +466,9 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
                 None,
             )
             .unwrap_or_default();
+            if let Some(t) = tab {
+                pages.borrow_mut()[t].push(h);
+            }
             SendMessageW(
                 h,
                 WM_SETFONT,
@@ -410,24 +532,61 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
             x,
             y,
             w,
-            22,
+            CHECK_H,
             id,
         );
         // SAFETY: our checkbox.
         unsafe { SendMessageW(h, BM_SETCHECK, Some(WPARAM(on as usize)), None) };
     };
-    let group = |text: &str, y: i32, h: i32| {
-        ctl(
+    // A group box also sets the page y-base its controls are laid out from.
+    let group = |text: &str, (top, h): (i32, i32)| {
+        base.set(0);
+        let box_ = ctl(
             w!("BUTTON"),
             text,
             BS_GROUPBOX,
             WINDOW_EX_STYLE(0),
-            10,
-            y,
-            380,
+            0,
+            top,
+            GROUP_W,
             h,
             -1,
-        )
+        );
+        base.set(top);
+        box_
+    };
+    // Trackbar beside a number box; starts at the box's own (clamped) value.
+    let slider = |x: i32, y: i32, id: i32, lo: u32, hi: u32, text: &str| {
+        let h = ctl(
+            w!("msctls_trackbar32"),
+            "",
+            WS_TABSTOP.0,
+            WINDOW_EX_STYLE(0),
+            x,
+            y,
+            100,
+            24,
+            id,
+        );
+        // SAFETY: our trackbar; the TBM_* setters do not notify the parent.
+        unsafe {
+            SendMessageW(
+                h,
+                TBM_SETRANGEMIN,
+                Some(WPARAM(1)),
+                Some(LPARAM(lo as isize)),
+            );
+            SendMessageW(
+                h,
+                TBM_SETRANGEMAX,
+                Some(WPARAM(1)),
+                Some(LPARAM(hi as isize)),
+            );
+            SendMessageW(h, TBM_SETPAGESIZE, None, Some(LPARAM(10)));
+            if let Some(p) = slider_pos(text, lo, hi) {
+                SendMessageW(h, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(p as isize)));
+            }
+        }
     };
     let list = |names: &[&str]| {
         names
@@ -437,47 +596,74 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
             .collect::<Vec<_>>()
     };
 
-    // Appearance
-    group("Appearance", 8, 176);
-    label("Layout", 24, 32, 150);
+    // Tabs first: Win32 puts each new child at the bottom of the z-order, so the
+    // page controls created later paint above the tab body. WS_CLIPSIBLINGS keeps
+    // the tab, the topmost sibling, from painting its pane over them.
+    let tabs = ctl(
+        w!("SysTabControl32"),
+        "",
+        WS_TABSTOP.0 | WS_CLIPSIBLINGS.0,
+        WINDOW_EX_STYLE(0),
+        TAB.0,
+        TAB.1,
+        TAB.2,
+        TAB.3,
+        ID_TABS,
+    );
+    for (i, name) in TABS.iter().enumerate() {
+        let t = crate::wide(name);
+        let item = TcItemW {
+            mask: TCIF_TEXT,
+            state: 0,
+            state_mask: 0,
+            text: t.as_ptr(),
+            text_max: 0,
+            image: 0,
+            lparam: 0,
+        };
+        // SAFETY: our tab control; the item and its text outlive the call.
+        unsafe {
+            SendMessageW(
+                tabs,
+                TCM_INSERTITEMW,
+                Some(WPARAM(i)),
+                Some(LPARAM(&item as *const _ as isize)),
+            );
+        }
+    }
+
+    // Overlay page
+    page(OVERLAY);
+    group("Appearance", OVERLAY_GROUPS[0]);
+    label("Layout", 14, 24, 130);
     combo(
-        180,
-        30,
+        170,
+        22,
         196,
         ID_LAYOUT,
         &list(&LAYOUTS),
         (c.layout == Layout::FpsOnly) as usize,
     );
-    label("Position", 24, 62, 150);
+    label("Position", 14, 54, 130);
     let pos = match c.position {
         Corner::TopLeft => 0,
         Corner::TopRight => 1,
         Corner::BottomLeft => 2,
         Corner::BottomRight => 3,
     };
-    combo(180, 60, 196, ID_POSITION, &list(&POSITIONS), pos);
-    label("Scale (%)", 24, 92, 150);
-    edit(
-        &((c.scale * 100.0).round() as u32).to_string(),
-        180,
-        90,
-        80,
-        ID_SCALE,
-        true,
-    );
-    label("Background opacity (%)", 24, 122, 150);
-    edit(
-        &((c.background_opacity * 100.0).round() as u32).to_string(),
-        180,
-        120,
-        80,
-        ID_OPACITY,
-        true,
-    );
-    check(CHECKS[0], 24, 150, 352, ID_CHECKS, c.fps_only_background);
+    combo(170, 52, 196, ID_POSITION, &list(&POSITIONS), pos);
+    let scale = ((c.scale * 100.0).round() as u32).to_string();
+    label("Scale (%)", 14, 84, 130);
+    slider(150, 80, ID_SCALE_SLIDER, 50, 200, &scale);
+    edit(&scale, 256, 82, 60, ID_SCALE, true);
+    let opacity = ((c.background_opacity * 100.0).round() as u32).to_string();
+    label("Background opacity (%)", 14, 114, 130);
+    slider(150, 110, ID_OPACITY_SLIDER, 0, 100, &opacity);
+    edit(&opacity, 256, 112, 60, ID_OPACITY, true);
+    check(CHECKS[0], 14, 142, 352, ID_CHECKS, c.fps_only_background);
 
     // Steam-like bar contents
-    group("Show in the Steam-like bar", 192, 124);
+    group("Show in the Steam-like bar", OVERLAY_GROUPS[1]);
     let on = [
         c.show_fps,
         c.show_low,
@@ -494,8 +680,8 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         let (col, row) = ((i % 2) as i32, (i / 2) as i32);
         check(
             CHECKS[i + 1],
-            24 + col * 180,
-            212 + row * 20,
+            14 + col * 180,
+            BAR_ROW.0 + row * BAR_ROW.1,
             170,
             ID_CHECKS + 1 + i as i32,
             v,
@@ -503,79 +689,96 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
     }
 
     // Game detection
-    group("Game detection", 324, 116);
-    label("Minimum FPS to count as a game", 24, 346, 190);
-    edit(
-        &(c.min_fps.round() as u32).to_string(),
-        220,
-        344,
-        60,
-        ID_MIN_FPS,
-        true,
-    );
-    label("Never show for (exe names, comma separated)", 24, 370, 340);
-    edit(&c.ignore.join(", "), 24, 388, 268, ID_IGNORE, false);
+    group("Game detection", OVERLAY_GROUPS[2]);
+    let min_fps = (c.min_fps.round() as u32).to_string();
+    label("Minimum FPS", 14, 22, 130);
+    slider(150, 18, ID_MIN_FPS_SLIDER, 1, 240, &min_fps);
+    edit(&min_fps, 256, 20, 60, ID_MIN_FPS, true);
+    label("Never show for (exe names, comma separated)", 14, 50, 340);
+    edit(&c.ignore.join(", "), 14, 68, 268, ID_IGNORE, false);
     ctl(
         w!("BUTTON"),
         "Add…",
         WS_TABSTOP.0,
         WINDOW_EX_STYLE(0),
-        298,
-        387,
+        288,
+        67,
         78,
         25,
         ID_ADD_IGNORE,
     );
-    check(CHECKS[11], 24, 418, 352, ID_CHECKS + 11, c.fullscreen_only);
+    check(CHECKS[11], 14, 98, 352, ID_CHECKS + 11, c.fullscreen_only);
 
-    // Background muting
-    group("Background muting", 448, 72);
+    // Hotkeys (in game only)
+    group(
+        "Hotkeys (work only while a game is in front)",
+        OVERLAY_GROUPS[3],
+    );
+    // `mute` adds "(none)" first and A–Z after the fixed keys; Save never
+    // rewrites a configured code that is in neither list.
+    let keys = |key: u8, mute: bool| {
+        let mut items: Vec<(String, usize)> = Vec::new();
+        if mute {
+            items.push(("(none)".to_string(), 0));
+        }
+        items.extend(KEYS.iter().map(|(n, v)| (n.to_string(), *v as usize)));
+        if mute {
+            items.extend((b'A'..=b'Z').map(|k| ((k as char).to_string(), k as usize)));
+        }
+        if !items.iter().any(|(_, v)| *v == key as usize) {
+            items.push((format!("Key code {key}"), key as usize));
+        }
+        let sel = items
+            .iter()
+            .position(|(_, v)| *v == key as usize)
+            .unwrap_or(0);
+        (items, sel)
+    };
+    label("Show/hide", 14, 22, 70);
+    let (items, sel) = keys(c.toggle_key, false);
+    combo(86, 20, 100, ID_TOGGLE, &items, sel);
+    label("Exit", 204, 22, 40);
+    let (items, sel) = keys(c.exit_key, false);
+    combo(246, 20, 120, ID_EXIT, &items, sel);
+
+    // Mute page
+    page(MUTE);
+    group("Background muting", MUTE_GROUP);
     label(
         "Mute while not focused (exe names, comma separated)",
-        24,
-        470,
+        14,
+        22,
         340,
     );
-    edit(&c.mute.join(", "), 24, 488, 268, ID_MUTE, false);
+    edit(&c.mute.join(", "), 14, 40, 268, ID_MUTE, false);
     ctl(
         w!("BUTTON"),
         "Add…",
         WS_TABSTOP.0,
         WINDOW_EX_STYLE(0),
-        298,
-        487,
+        288,
+        39,
         78,
         25,
         ID_ADD_MUTE,
     );
+    label("Mute focused game", 14, 74, 130);
+    let mods = MODS
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _))| (n.to_string(), i))
+        .collect::<Vec<_>>();
+    let sel = MODS.iter().position(|(_, m)| *m == c.mute_mod).unwrap_or(0);
+    combo(150, 72, 80, ID_MUTE_MOD, &mods, sel);
+    let (items, sel) = keys(c.mute_key, true);
+    combo(240, 72, 120, ID_MUTE_KEY, &items, sel);
 
-    // Hotkeys (in game only)
-    group("Hotkeys (work only while a game is in front)", 528, 54);
-    let keys = |cur: u8| {
-        let mut items: Vec<(String, usize)> = KEYS
-            .iter()
-            .map(|(n, v)| (n.to_string(), *v as usize))
-            .collect();
-        if !KEYS.iter().any(|(_, v)| *v == cur) {
-            items.push((format!("Key code {cur}"), cur as usize));
-        }
-        let sel = items
-            .iter()
-            .position(|(_, v)| *v == cur as usize)
-            .unwrap_or(0);
-        (items, sel)
-    };
-    label("Show/hide", 24, 550, 70);
-    let (items, sel) = keys(c.toggle_key);
-    combo(96, 548, 100, ID_TOGGLE, &items, sel);
-    label("Exit", 214, 550, 40);
-    let (items, sel) = keys(c.exit_key);
-    combo(256, 548, 120, ID_EXIT, &items, sel);
-
+    // Shared bottom row, below the tab control and on no page.
+    cur.set(None);
     check(
         "Start with Windows",
         14,
-        592,
+        558,
         190,
         ID_AUTOSTART,
         crate::autostart::enabled(),
@@ -586,7 +789,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         WS_TABSTOP.0 | BS_DEFPUSHBUTTON,
         WINDOW_EX_STYLE(0),
         214,
-        590,
+        556,
         84,
         26,
         IDOK,
@@ -597,11 +800,13 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) {
         WS_TABSTOP.0,
         WINDOW_EX_STYLE(0),
         306,
-        590,
+        556,
         84,
         26,
         IDCANCEL,
     );
+
+    pages.into_inner()
 }
 
 unsafe fn item(hwnd: HWND, id: i32) -> HWND {
@@ -637,7 +842,20 @@ unsafe fn combo_value(hwnd: HWND, id: i32) -> usize {
 
 unsafe fn save(hwnd: HWND) {
     // SAFETY: reads our own controls.
-    let (scale, opacity, min_fps, ignore, mute, checks, layout, position, toggle, exit) = unsafe {
+    let (
+        scale,
+        opacity,
+        min_fps,
+        ignore,
+        mute,
+        checks,
+        layout,
+        position,
+        toggle,
+        exit,
+        mute_key,
+        mute_mod,
+    ) = unsafe {
         let mut checks = [false; 12];
         for (i, c) in checks.iter_mut().enumerate() {
             *c = SendMessageW(item(hwnd, ID_CHECKS + i as i32), BM_GETCHECK, None, None).0 == 1;
@@ -653,6 +871,8 @@ unsafe fn save(hwnd: HWND) {
             combo_value(hwnd, ID_POSITION),
             combo_value(hwnd, ID_TOGGLE) as u8,
             combo_value(hwnd, ID_EXIT) as u8,
+            combo_value(hwnd, ID_MUTE_KEY) as u8,
+            combo_value(hwnd, ID_MUTE_MOD),
         )
     };
     let fields = Fields {
@@ -666,6 +886,8 @@ unsafe fn save(hwnd: HWND) {
         checks,
         toggle_key: toggle,
         exit_key: exit,
+        mute_key,
+        mute_mod,
     };
     let cfg = match from_fields(&fields) {
         Ok(c) => c,
@@ -812,10 +1034,63 @@ unsafe fn pick_into(hwnd: HWND, edit_id: i32, button_id: i32) {
     }
 }
 
+/// Shows tab page `sel` and hides the other one; hidden controls are skipped by
+/// `IsDialogMessageW`'s Tab handling.
+fn show_page(sel: usize) {
+    let (mut show, mut hide) = (Vec::new(), Vec::new());
+    UI.with(|u| {
+        if let Some(u) = u.borrow().as_ref() {
+            for (i, page) in u.pages.iter().enumerate() {
+                let out = if i == sel { &mut show } else { &mut hide };
+                out.extend_from_slice(page);
+            }
+        }
+    });
+    // SAFETY: page controls of our own live window.
+    unsafe {
+        for h in hide {
+            let _ = ShowWindow(h, SW_HIDE);
+        }
+        for h in show {
+            let _ = ShowWindow(h, SW_SHOW);
+        }
+    }
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_CTLCOLORSTATIC => {
+            // Under visual styles the tab pane is drawn in the window colour, but
+            // a STATIC defaults to the dialog face: paint its text on the pane's
+            // own (window-coloured) brush instead of a grey box.
+            // SAFETY: plain background-mode and colour-brush calls on the DC the
+            // control passed us; the brush is a system brush we do not own.
+            unsafe {
+                SetBkMode(HDC(lp.0 as _), TRANSPARENT);
+                LRESULT(GetSysColorBrush(COLOR_WINDOW).0 as isize)
+            }
+        }
         WM_COMMAND => {
-            match (wp.0 & 0xFFFF) as i32 {
+            let id = (wp.0 & 0xFFFF) as i32;
+            if (wp.0 >> 16) as u32 == EN_CHANGE {
+                // A number box changed: follow it with its slider, ignoring text
+                // that is not a number. TBM_SETPOS does not notify, so no loop.
+                // SAFETY: reads our own box and moves its own slider.
+                unsafe {
+                    if let Some(&(_, bar, lo, hi)) = SLIDERS.iter().find(|s| s.0 == id)
+                        && let Some(p) = slider_pos(&text(hwnd, id), lo, hi)
+                    {
+                        SendMessageW(
+                            item(hwnd, bar),
+                            TBM_SETPOS,
+                            Some(WPARAM(1)),
+                            Some(LPARAM(p as isize)),
+                        );
+                    }
+                }
+                return LRESULT(0);
+            }
+            match id {
                 // SAFETY: called on our window from its own message.
                 IDOK => unsafe { save(hwnd) },
                 IDCANCEL => unsafe {
@@ -824,6 +1099,31 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 ID_ADD_IGNORE => unsafe { pick_into(hwnd, ID_IGNORE, ID_ADD_IGNORE) },
                 ID_ADD_MUTE => unsafe { pick_into(hwnd, ID_MUTE, ID_ADD_MUTE) },
                 _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_HSCROLL => {
+            // A trackbar moved: show its position in the paired number box.
+            // SAFETY: lParam is the trackbar that sent this; we only set text.
+            unsafe {
+                let bar = HWND(lp.0 as _);
+                if let Some(&(box_id, ..)) = SLIDERS.iter().find(|s| s.1 == GetDlgCtrlID(bar)) {
+                    let t = crate::wide(&SendMessageW(bar, TBM_GETPOS, None, None).0.to_string());
+                    let _ = SetWindowTextW(item(hwnd, box_id), PCWSTR(t.as_ptr()));
+                }
+            }
+            LRESULT(0)
+        }
+        WM_NOTIFY => {
+            // SAFETY: WM_NOTIFY's lParam starts with an NMHDR valid for this call.
+            let (from, code) = unsafe {
+                let nm = &*(lp.0 as *const Nmhdr);
+                (nm.id_from, nm.code as i32)
+            };
+            if from == ID_TABS as usize && code == TCN_SELCHANGE {
+                // SAFETY: our own tab control and page controls.
+                let sel = unsafe { SendMessageW(item(hwnd, ID_TABS), TCM_GETCURSEL, None, None).0 };
+                show_page(sel.max(0) as usize);
             }
             LRESULT(0)
         }
@@ -871,6 +1171,8 @@ mod tests {
             ],
             toggle_key: toggle,
             exit_key: exit,
+            mute_key: 0x4D,
+            mute_mod: 1,
         }
     }
 
@@ -888,6 +1190,7 @@ mod tests {
         assert!(!c.show_gpu_clock && c.show_vram && !c.show_ram && c.show_process && c.fahrenheit);
         assert!(c.fullscreen_only);
         assert_eq!((c.toggle_key, c.exit_key), (0x70, 0x7B));
+        assert_eq!((c.mute_key, c.mute_mod), (0x4D, Modifier::Alt));
         // Saved form must survive the ini round trip unchanged.
         assert_eq!(config::parse(&config::to_ini(&c)), c);
     }
@@ -930,8 +1233,50 @@ mod tests {
     }
 
     #[test]
+    fn slider_pos_clamps_and_ignores_garbage() {
+        assert_eq!(slider_pos("500", 1, 240), Some(240));
+        assert_eq!(slider_pos(" 60 ", 1, 240), Some(60));
+        assert_eq!(slider_pos("0", 1, 240), Some(1));
+        assert_eq!(slider_pos("", 1, 240), None);
+        assert_eq!(slider_pos("abc", 50, 200), None);
+    }
+
+    // Regression: page controls used their group-relative y as a page y, so the
+    // Steam-bar, Game detection and Hotkeys rows piled up over Appearance.
+    #[test]
+    fn page_controls_fit_their_groups_and_the_tab_pane() {
+        // Bottom of the lowest control in each `OVERLAY_GROUPS` box, group-relative.
+        let content_bottom = [164, BAR_ROW.0 + 4 * BAR_ROW.1 + CHECK_H, 120, 45];
+        for (i, &(top, h)) in OVERLAY_GROUPS.iter().enumerate() {
+            assert!(content_bottom[i] <= h, "group {i} too short");
+            if let Some(&(next, _)) = OVERLAY_GROUPS.get(i + 1) {
+                assert!(top + h <= next, "groups {i} and {} overlap", i + 1);
+            }
+        }
+        let (last_top, last_h) = OVERLAY_GROUPS[3];
+        assert!(
+            PAGE_Y + last_top + last_h <= TAB.1 + TAB.3,
+            "pane too short"
+        );
+        assert!(PAGE_Y + MUTE_GROUP.0 + MUTE_GROUP.1 <= TAB.1 + TAB.3);
+        assert!(PAGE_X + GROUP_W <= TAB.0 + TAB.2, "group box past the pane");
+    }
+
+    #[test]
     fn same_hotkey_rejected() {
         assert!(from_fields(&fields("100", 0x2D, 0x2D)).is_err());
         assert!(from_fields(&fields("100", 0, 0x2D)).is_err());
+    }
+
+    #[test]
+    fn mute_key_clashing_with_other_hotkeys_rejected() {
+        let mut f = fields("100", 0x70, 0x7B);
+        f.mute_key = 0x70;
+        assert!(from_fields(&f).is_err());
+        f.mute_key = 0x7B;
+        f.mute_mod = 0;
+        assert!(from_fields(&f).is_err());
+        f.mute_key = 0; // disabled: never clashes
+        assert_eq!(from_fields(&f).unwrap().mute_key, 0);
     }
 }

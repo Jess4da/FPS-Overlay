@@ -77,6 +77,8 @@ Not elevated → relaunch elevated and exit; UAC declined → exit silently. ETW
 ## Hotkeys
 Polled with `GetAsyncKeyState` on the in-game 100 ms timer (edge-triggered: act on up→down transition), **only while is game** — so no keyboard polling when idle. Non-consuming by construction. `toggle_key` flips `user_visible`; `exit_key` quits the process (cleanly stops the ETW session). The process also exits on `WM_ENDSESSION` / Ctrl+C.
 
+The mute chord (`mute_key` + `mute_mod`, default `Alt+M`) is polled the same way and edge-triggered on the whole chord: the modifier is checked with `GetAsyncKeyState` too, so it is down when required and ignored when `mute_mod=none`. Its edge calls `App::toggle_hold`, which holds the foreground exe muted (see `2026-11-17-mute-hotkey-design.md`). `mute_key=0` disables the chord, and `ignore`d exes never qualify.
+
 ## Window & rendering
 - `WS_POPUP`, ex-style `WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`. Sized to content, not the whole screen.
 - **GDI only** (no Direct2D/DirectWrite/D3D — avoids loading d2d1/dwrite/d3d11 and their working set). One 32-bit top-down DIB section in a memory DC, sized to content; `CreateFontW("Segoe UI", ANTIALIASED_QUALITY)` cached per size; `GetTextExtentPoint32W` for measuring; `ExtTextOutW` for drawing.
