@@ -27,10 +27,11 @@ WM_TIMER ─► App::tick ─► read SHARED sample ─► GameGate::on_tick ─
 App::apply(GateOut): etw dead? → restart_etw, SHARED.target_pid, etw.set_providers, SetTimer/KillTimer, hide/idle trim
 Tray WM_TRAY: double-click → settings::open → Save → config::save + App::reconfigure (live)
 Background mute (only while App.mute is Some):
+  hotkeys → mute chord edge → App::toggle_hold → MuteState (created lazily) → reconcile
   App::foreground ─► one-shot SetTimer(MUTE_TIMER_ID=2, 150 ms) ─► WM_TIMER ─► KillTimer + App::mute_reconcile
   WM_AUDIO (WM_APP+3): NOTIFY_DEVICE → refresh_endpoints + reconcile; NOTIFY_SESSION → reconcile
   WM_WTSSESSION_CHANGE / WTS_SESSION_UNLOCK → reconcile
-  reconfigure → mute_release (old list) → swap cfg → sync_mute (create/drop MuteState, reconcile)
+  reconfigure → mute_release (old list) → swap cfg → drop unreleasable holds → sync_mute (create/drop MuteState, reconcile)
   every reconcile/release → muted.txt saved when Muter::persisted() changed
 ```
 
@@ -41,7 +42,7 @@ Background mute (only while App.mute is Some):
   - **Timers:** `Probe` 250 ms → `Game` 100 ms → `SlowProbe` 1000 ms after 10 s without qualifying.
   - **Providers:** `Off`, `UserMode` (DXGI+D3D9), or `WithKernel`. DxgKrnl is added only after 1.5 s with no user-mode events (Vulkan/OpenGL fallback).
 - **FPS counting (`src/fps.rs`):** 1 s window, priority D3D9 > DXGI > kernel. Kernel-only counts only if ≥ 20 fps. Windows older than 2 s are dropped. Also keeps a 4096-gap ring of the top-priority source (a lower one takes over after 2 s of silence): nearest-rank p99 over the last 10 s, gaps > 2 s skipped, < 100 gaps ⇒ none.
-- **Mute (`src/mute.rs`, pure; `src/audio.rs`, WASAPI):** `Muter::reconcile(mixer, cfg.mute, fg_exe)` mutes listed sessions not in the foreground and only unmutes ones it muted (`owned`); lost ownership goes `stale` and is persisted in `muted.txt` beside the exe (crash recovery: release is `panic = "abort"`). `App.mute: Option<MuteState>` exists only while `mute_wanted(cfg.mute empty, persisted empty)`; COM is initialised lazily once (`com_init`) and uninitialised after `App` drops.
+- **Mute (`src/mute.rs`, pure; `src/audio.rs`, WASAPI):** `Muter::reconcile(mixer, cfg.mute, fg_exe)` mutes listed sessions not in the foreground, plus `held` exes (the mute chord) wherever they are, and only unmutes ones it muted (`owned`); lost ownership goes `stale` and is persisted in `muted.txt` beside the exe (crash recovery: release is `panic = "abort"`). Holds are live only: never persisted, dropped by `reconfigure` when the chord can no longer reach the exe (`mute_key=0`, exe now in `ignore`). `App.mute: Option<MuteState>` exists only while `mute_wanted(cfg.mute empty, persisted empty, no holds)`; COM is initialised lazily once (`com_init`) and uninitialised after `App` drops.
 - **Rendering (`src/render.rs`):** GDI only. Two DIBs, one with colour and one as a white-on-black coverage mask. `compose` produces premultiplied BGRA for `UpdateLayeredWindow(ULW_ALPHA)`. The window is `WS_EX_TOPMOST|LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW`: click-through and never focused.
 - **Self-heal:** each tick compares `GetForegroundWindow()` with `fg_hwnd` and re-runs `foreground()`, because WinEvents can be missed or coalesced.
 - **ETW self-heal:** the consumer thread clears `Etw::is_alive()` when `ProcessTrace` returns (session stopped by name, `logman stop`, session loss). `App::apply` (reached from every `foreground()`/`tick()`) then calls `restart_etw` on the UI thread: reset `target`, `Etw::start` anew, drop the dead one (its `Drop` skips the stop and joins a finished thread). A failed restart keeps the dead `Etw` and retries on the next call; never restart from the ETW thread and never add a timer for it.
@@ -100,7 +101,7 @@ git tag v0.5.0; git push origin v0.5.0
   - The FPS-only layout must never call `metrics.poll()` or `process::label`, so the delay-loaded `pdh`/`dxgi`/`version`/`nvml` DLLs are never mapped.
   - `Metrics::new()` stays cheap.
   - No timer while not a candidate. The only other timer is `MUTE_TIMER_ID`, a one-shot debounce armed only while `mute` is active.
-  - `mute` empty and no `muted.txt` ⇒ no COM init, no `WasapiMixer` (no `mmdevapi.dll`), no mute timer, no WTS registration.
+  - `mute` empty, no `muted.txt` and no hold ⇒ no COM init, no `WasapiMixer` (no `mmdevapi.dll`), no mute timer, no WTS registration.
   - Every exit path (loop end: tray Exit, `End`, `WM_CLOSE`, update restart; `WM_ENDSESSION`) calls `shutdown`, which runs `drop_mute` (release + save `muted.txt`) before `App` drops.
   - Redraw only when `needs_draw(..)` is true (the `Frame` compares unequal).
   - On idle, call `release_buffers` and `SetProcessWorkingSetSize(-1,-1)`.
