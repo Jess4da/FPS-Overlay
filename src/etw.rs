@@ -40,6 +40,8 @@ pub struct Shared {
     pub fps_bits: AtomicU32,
     /// 1% low as f32 bits for the sample above, `0` = none.
     pub low_bits: AtomicU32,
+    /// 0.1% low as f32 bits for the sample above, `0` = none.
+    pub low01_bits: AtomicU32,
     pub sample_pid: AtomicU32,
     /// QPC timestamp of the sample, 0 = none.
     pub sample_qpc: AtomicI64,
@@ -55,6 +57,7 @@ impl Shared {
             target_pid: AtomicU32::new(0),
             fps_bits: AtomicU32::new(0),
             low_bits: AtomicU32::new(0),
+            low01_bits: AtomicU32::new(0),
             sample_pid: AtomicU32::new(0),
             sample_qpc: AtomicI64::new(0),
             saw_pid: AtomicU32::new(0),
@@ -376,6 +379,10 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
             .shared
             .low_bits
             .store(sample.low.map_or(0, f32::to_bits), Relaxed);
+        consumer
+            .shared
+            .low01_bits
+            .store(sample.low01.map_or(0, f32::to_bits), Relaxed);
         consumer.shared.sample_pid.store(target, Relaxed);
         // Release last: readers load sample_qpc with Acquire, then the fields above.
         consumer.shared.sample_qpc.store(header.TimeStamp, Release);

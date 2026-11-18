@@ -35,6 +35,7 @@ pub struct Frame {
 pub struct Stats {
     pub fps: Option<f32>,
     pub fps_low: Option<f32>,
+    pub fps_low01: Option<f32>,
     pub cpu: Option<f32>,
     pub cpu_mhz: Option<f32>,
     pub gpu: Option<f32>,
@@ -168,6 +169,14 @@ pub fn build(s: &Stats, c: &Config) -> Frame {
         ]);
     }
 
+    if c.show_low01 {
+        let (text, color) = fps_text(s.fps_low01);
+        groups.push(vec![
+            label("0.1%", rgb(0.92, 0.52, 0.58)),
+            part(text, color, LABEL_GAP),
+        ]);
+    }
+
     if c.show_cpu {
         let value = match s.cpu {
             Some(p) => part(format!("{p:.0}%"), load_color(p), LABEL_GAP),
@@ -270,6 +279,7 @@ mod tests {
         Stats {
             fps: Some(180.0),
             fps_low: Some(142.0),
+            fps_low01: Some(61.0),
             cpu: Some(15.0),
             cpu_mhz: Some(4400.0),
             gpu: Some(25.0),
@@ -418,6 +428,7 @@ mod tests {
         let s = Stats {
             fps: Some(180.0),
             fps_low: None,
+            fps_low01: None,
             cpu: Some(15.0),
             cpu_mhz: None,
             gpu: None,
@@ -542,6 +553,29 @@ mod tests {
         let t = text(&build(&s, &c).lines[0]);
         assert_eq!(t, "FPS144");
         assert!(!t.contains("1%"), "{t}");
+    }
+
+    #[test]
+    fn low01_group_after_low() {
+        let c = Config {
+            show_low01: true,
+            ..fps_low_groups(true)
+        };
+        let s = Stats {
+            fps: Some(144.0),
+            fps_low: Some(98.0),
+            fps_low01: Some(45.0),
+            ..Stats::default()
+        };
+        let runs = &build(&s, &c).lines[0].runs;
+        assert_eq!(text(&build(&s, &c).lines[0]), "FPS144 | 1%98 | 0.1%45");
+        assert_eq!(runs[6].color, Rgb(235, 133, 148));
+        assert_eq!(runs[7].color, Rgb(255, 217, 38));
+        let off = Config {
+            show_low01: false,
+            ..c
+        };
+        assert_eq!(text(&build(&s, &off).lines[0]), "FPS144 | 1%98");
     }
 
     #[test]

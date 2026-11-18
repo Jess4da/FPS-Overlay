@@ -44,6 +44,7 @@ pub struct Config {
     pub background_opacity: f32,
     pub show_fps: bool,
     pub show_low: bool,
+    pub show_low01: bool,
     pub show_cpu: bool,
     pub show_cpu_clock: bool,
     pub show_gpu: bool,
@@ -74,6 +75,7 @@ scale=100
 background_opacity=100
 show_fps=1
 show_low=0
+show_low01=0
 show_cpu=1
 show_cpu_clock=1
 show_gpu=1
@@ -102,6 +104,7 @@ impl Default for Config {
             background_opacity: 1.0,
             show_fps: true,
             show_low: false,
+            show_low01: false,
             show_cpu: true,
             show_cpu_clock: true,
             show_gpu: true,
@@ -252,7 +255,7 @@ pub fn to_ini(c: &Config) -> String {
     };
     format!(
         "[Overlay]\nlayout={layout}\nfps_only_background={}\nposition={position}\nscale={}\n\
-         background_opacity={}\nshow_fps={}\nshow_low={}\nshow_cpu={}\nshow_cpu_clock={}\nshow_gpu={}\nshow_gpu_clock={}\n\
+         background_opacity={}\nshow_fps={}\nshow_low={}\nshow_low01={}\nshow_cpu={}\nshow_cpu_clock={}\nshow_gpu={}\nshow_gpu_clock={}\n\
          show_vram={}\nshow_ram={}\nshow_process={}\nfahrenheit={}\nmin_fps={}\nfullscreen_only={}\n\
          ignore={}\nmute={}\ntoggle_key={}\nexit_key={}\nmute_key={}\nmute_mod={mute_mod}\n",
         b(c.fps_only_background),
@@ -260,6 +263,7 @@ pub fn to_ini(c: &Config) -> String {
         (c.background_opacity * 100.0).round() as u32,
         b(c.show_fps),
         b(c.show_low),
+        b(c.show_low01),
         b(c.show_cpu),
         b(c.show_cpu_clock),
         b(c.show_gpu),
@@ -306,6 +310,7 @@ fn set(c: &mut Config, key: &str, val: &str) {
         }
         "show_fps" => flag(&mut c.show_fps, &v),
         "show_low" => flag(&mut c.show_low, &v),
+        "show_low01" => flag(&mut c.show_low01, &v),
         "show_cpu" => flag(&mut c.show_cpu, &v),
         "show_cpu_clock" => flag(&mut c.show_cpu_clock, &v),
         "show_gpu" => flag(&mut c.show_gpu, &v),
@@ -388,6 +393,7 @@ mod tests {
             scale: 1.5,
             background_opacity: 0.4,
             show_low: true,
+            show_low01: true,
             show_cpu: false,
             show_cpu_clock: false,
             show_process: false,

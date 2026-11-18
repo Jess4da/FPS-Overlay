@@ -35,13 +35,13 @@ Background mute (only while App.mute is Some):
   every reconcile/release → muted.txt saved when Muter::persisted() changed
 ```
 
-- **ETW → UI contract (`etw::SHARED`):** the callback stores `fps_bits`, `low_bits` and `sample_pid` Relaxed, then `sample_qpc` **Release**, last. Readers load `sample_qpc` **Acquire** first (0 means no sample), then the rest Relaxed; `low_bits` is f32 bits, 0 = none. The UI thread writes only `target_pid`. `saw_pid` is per-pid evidence that a user-mode (DXGI/D3D9) event was seen.
+- **ETW → UI contract (`etw::SHARED`):** the callback stores `fps_bits`, `low_bits`, `low01_bits` and `sample_pid` Relaxed, then `sample_qpc` **Release**, last. Readers load `sample_qpc` **Acquire** first (0 means no sample), then the rest Relaxed; `low_bits`/`low01_bits` are f32 bits, 0 = none. The UI thread writes only `target_pid`. `saw_pid` is per-pid evidence that a user-mode (DXGI/D3D9) event was seen.
 - **Gate (`src/gate.rs`):** pure state machine returning `GateOut { timer, providers, visible, fps }`.
   - **Candidate:** pid ≠ own and the exe is not in `ignore`.
   - **Game:** a candidate with a fresh sample ≥ `min_fps`. Qualification is sticky per foreground period.
   - **Timers:** `Probe` 250 ms → `Game` 100 ms → `SlowProbe` 1000 ms after 10 s without qualifying.
   - **Providers:** `Off`, `UserMode` (DXGI+D3D9), or `WithKernel`. DxgKrnl is added only after 1.5 s with no user-mode events (Vulkan/OpenGL fallback).
-- **FPS counting (`src/fps.rs`):** 1 s window, priority D3D9 > DXGI > kernel. Kernel-only counts only if ≥ 20 fps. Windows older than 2 s are dropped. Also keeps a 4096-gap ring of the top-priority source (a lower one takes over after 2 s of silence): nearest-rank p99 over the last 10 s, gaps > 2 s skipped, < 100 gaps ⇒ none.
+- **FPS counting (`src/fps.rs`):** 1 s window, priority D3D9 > DXGI > kernel. Kernel-only counts only if ≥ 20 fps. Windows older than 2 s are dropped. Also keeps a 12288-gap ring of the top-priority source (a lower one takes over after 2 s of silence), gaps > 2 s skipped: 1% low = nearest-rank p99 over the last 10 s (< 100 gaps ⇒ none); 0.1% low = p99.9 over the last 30 s (< 1000 gaps ⇒ none).
 - **Mute (`src/mute.rs`, pure; `src/audio.rs`, WASAPI):** `Muter::reconcile(mixer, cfg.mute, fg_exe)` mutes listed sessions not in the foreground, plus `held` exes (the mute chord) wherever they are, and only unmutes ones it muted (`owned`); lost ownership goes `stale` and is persisted in `muted.txt` beside the exe (crash recovery: release is `panic = "abort"`). Holds are live only: never persisted, dropped by `reconfigure` when the chord can no longer reach the exe (`mute_key=0`, exe now in `ignore`). `App.mute: Option<MuteState>` exists only while `mute_wanted(cfg.mute empty, persisted empty, no holds)`; COM is initialised lazily once (`com_init`) and uninitialised after `App` drops.
 - **Rendering (`src/render.rs`):** GDI only. Two DIBs, one with colour and one as a white-on-black coverage mask. `compose` produces premultiplied BGRA for `UpdateLayeredWindow(ULW_ALPHA)`. The window is `WS_EX_TOPMOST|LAYERED|TRANSPARENT|NOACTIVATE|TOOLWINDOW`: click-through and never focused.
 - **Self-heal:** each tick compares `GetForegroundWindow()` with `fg_hwnd` and re-runs `foreground()`, because WinEvents can be missed or coalesced.
@@ -62,7 +62,7 @@ Background mute (only while App.mute is Some):
 
 ```powershell
 cargo build --release                          # target\release\fps-overlay.exe
-cargo test                                     # all unit tests (123)
+cargo test                                     # all unit tests (127)
 cargo test gate::tests                         # one module (config, fps, layout, render, metrics, main, settings, process, autostart, update, mute)
 cargo test lists_live_sessions -- --ignored --nocapture  # real WASAPI session list (needs a playing app)
 cargo test poll_smoke -- --nocapture           # real PDH/DXGI/NVML poll, prints Sample + timing (~1.1 s)

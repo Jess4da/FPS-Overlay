@@ -78,10 +78,12 @@ A tray icon ("FPS Overlay") is always present:
 
 ## Layouts
 
-- `layout=steam` (default): one line `FPS 180 | 1% 142 | CPU 15% | 5545 MHz | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G`
+- `layout=steam` (default): one line `FPS 180 | 1% 142 | 0.1% 61 | CPU 15% | 5545 MHz | GPU 25% 54°C | 2505 MHz | VRAM 25% 2.0/8G | RAM 80% 12.8/16G`
   plus a process line `RocketLeague.exe (Rocket League)`. The `1% 142` group is
   optional (`show_low=1`): nearest-rank p99 frame time over the last 10 s,
-  `---` until 100 frames.
+  `---` until 100 frames. The `0.1% 61` group is optional too (`show_low01=1`):
+  nearest-rank p99.9 frame time over the last 30 s, `---` until 1000 frames.
+  It catches rare stutters the 1% low hides.
 - `layout=fps-only`: a single FPS number with a drop shadow, no background by
   default. CPU/GPU/RAM are never polled in this layout (PDH, DXGI and NVML are
   never loaded).
@@ -100,6 +102,7 @@ game window.
 | `background_opacity` | `100` | 0–100 (%) |
 | `show_fps`, `show_cpu`, `show_cpu_clock`, `show_gpu`, `show_gpu_clock`, `show_vram`, `show_ram`, `show_process` | `1` | `0`/`1` |
 | `show_low` | `0` | `0`/`1` (Steam-like bar: 1% low after FPS) |
+| `show_low01` | `0` | `0`/`1` (Steam-like bar: 0.1% low after 1% low) |
 | `fahrenheit` | `0` | `0`/`1` |
 | `min_fps` | `20` | 1–1000; a foreground app below this is not treated as a game |
 | `fullscreen_only` | `0` | `0`/`1`; show only while the game covers its whole monitor (exclusive fullscreen or borderless). Detection still runs for windowed games, the overlay just stays hidden |

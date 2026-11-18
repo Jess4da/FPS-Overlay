@@ -1,9 +1,9 @@
 //! FPS from present events. Pure: time is QPC ticks plus the frequency.
-//! Also keeps the last 10 s of present gaps for the 1% low.
+//! Also keeps the last 30 s of present gaps for the 1% and 0.1% lows.
 
-/// Gaps kept for the 1% low. Same source, so a monotonic ring is enough.
-/// ponytail: above ~400 fps this covers < 10 s; raise it if that ever matters.
-pub const LOW_CAP: usize = 4096;
+/// Gaps kept for the lows. Same source, so a monotonic ring is enough.
+/// ponytail: above ~400 fps this covers < 30 s; raise it if that ever matters.
+pub const LOW_CAP: usize = 12288;
 
 /// One closed 1 s window.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -12,6 +12,8 @@ pub struct Sample {
     pub fps: f32,
     /// Nearest-rank p99 frame time of the last 10 s, in FPS. `None` under 100 frames.
     pub low: Option<f32>,
+    /// Nearest-rank p99.9 frame time of the last 30 s, in FPS. `None` under 1000 frames.
+    pub low01: Option<f32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -44,7 +46,7 @@ pub struct FpsCounter {
     /// Ring of present gaps in QPC ticks, newest at `head - 1`. Only gaps that fit
     /// a `u32` are recorded; above a ~2.1 GHz clock that drops the longest frames.
     gaps: Box<[u32]>,
-    /// Selection scratch, so the 1% low never allocates in the callback.
+    /// Selection scratch, so the lows never allocate in the callback.
     scratch: Box<[u32]>,
     head: usize,
     len: usize,
@@ -144,14 +146,16 @@ impl FpsCounter {
         }
         Some(Sample {
             fps: frames as f32 / secs,
-            low: self.low(),
+            low: self.pct(10, 990, 100),
+            low01: self.pct(30, 999, 1000),
         })
     }
 
-    /// Nearest-rank p99 frame time over the last 10 s of gaps, as FPS.
-    /// Runs once per closed window: at most `LOW_CAP` walks and a selection.
-    fn low(&mut self) -> Option<f32> {
-        let window = (10 * self.freq) as u64;
+    /// Nearest-rank `per_mille`/1000 frame time over the newest gaps spanning
+    /// `secs`, as FPS; `None` under `min` gaps. Runs once per closed window:
+    /// at most `LOW_CAP` walks, a copy and a selection.
+    fn pct(&mut self, secs: i64, per_mille: usize, min: usize) -> Option<f32> {
+        let window = (secs * self.freq) as u64;
         let mut n = 0;
         let mut sum = 0u64;
         while n < self.len {
@@ -162,13 +166,13 @@ impl FpsCounter {
             sum += gap;
             n += 1;
         }
-        if n < 100 {
+        if n < min {
             return None;
         }
         for (k, slot) in self.scratch[..n].iter_mut().enumerate() {
             *slot = self.gaps[(self.head + LOW_CAP - 1 - k) % LOW_CAP];
         }
-        let idx = (99 * n).div_ceil(100) - 1;
+        let idx = (per_mille * n).div_ceil(1000) - 1;
         let (_, gap, _) = self.scratch[..n].select_nth_unstable(idx);
         Some(self.freq as f32 / *gap as f32)
     }
@@ -433,18 +437,20 @@ mod tests {
     fn low_ring_wraps() {
         let mut c = FpsCounter::new(1000);
         let mut last = None;
-        for i in 0..=6000 {
+        // 13 s of 1 ms frames: more gaps than the ring holds, ending on a window close.
+        for i in 0..=13_000 {
             last = c.on_present(1, 1, Source::Dxgi, i);
         }
         assert!(low_approx(last, 1000.0), "got {last:?}");
-        // 3 ms frames evict the 1 ms ones, so the ring ends up spanning > 10 s:
-        // the window must be the newest gaps, not the oldest.
-        let mut t = 6000;
-        for _ in 0..4100 {
+        // 3 ms frames evict the 1 ms ones, so the ring ends up spanning > 30 s:
+        // the windows must be the newest gaps, not the oldest.
+        let mut t = 13_000;
+        for _ in 0..LOW_CAP + 4 {
             t += 3;
             last = c.on_present(1, 1, Source::Dxgi, t).or(last);
         }
         assert!(low_approx(last, 333.3), "got {last:?}");
+        assert!(approx(low01(last), 333.3), "got {last:?}");
         // 5 ms from here on, enough for a window to close.
         for _ in 0..200 {
             t += 5;
@@ -485,5 +491,87 @@ mod tests {
         }
         assert_eq!(last.and_then(|s| s.low), None, "old gaps survived reset");
         assert!(approx(last.map(|s| s.fps), 50.0), "got {last:?}");
+    }
+
+    fn low01(s: Option<Sample>) -> Option<f32> {
+        s.and_then(|s| s.low01)
+    }
+
+    /// `n + 1` frames at 10 ms with the last `spikes` gaps at 50 ms, then 10 ms
+    /// frames until one more window closes; returns that sample.
+    fn spiked(n: i64, spikes: i64) -> Option<Sample> {
+        let mut c = FpsCounter::new(1000);
+        let mut t = 0;
+        let mut last = None;
+        for i in 0..=n {
+            if i > 0 {
+                t += if i > n - spikes { 50 } else { 10 };
+            }
+            last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+        }
+        let end = t + 1000;
+        while t < end {
+            t += 10;
+            last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+        }
+        last
+    }
+
+    #[test]
+    fn low01_none_below_1000_frames() {
+        // Windows close every 1 s: the one at 9 s holds 900 gaps, enough for the
+        // 1% low only; the one at 10 s holds 1000.
+        let mut c = FpsCounter::new(1000);
+        let mut last = None;
+        for i in 0..=999 {
+            last = c.on_present(1, 1, Source::Dxgi, 10 * i).or(last);
+        }
+        assert!(low_approx(last, 100.0), "got {last:?}");
+        assert_eq!(low01(last), None);
+        last = c.on_present(1, 1, Source::Dxgi, 10_000).or(last);
+        assert!(approx(low01(last), 100.0), "got {last:?}");
+    }
+
+    #[test]
+    fn low01_is_p999_gap() {
+        // ~2100 gaps: nearest rank p99.9 is the 3rd-worst, so 3 spikes show and 2 don't.
+        assert!(
+            approx(low01(spiked(2000, 3)), 20.0),
+            "got {:?}",
+            spiked(2000, 3)
+        );
+        assert!(
+            approx(low01(spiked(2000, 2)), 100.0),
+            "got {:?}",
+            spiked(2000, 2)
+        );
+        // The 1% low ignores a handful of spikes the 0.1% low catches.
+        assert!(low_approx(spiked(2000, 3), 100.0));
+    }
+
+    #[test]
+    fn low01_window_30s_low_window_10s() {
+        // 3 spikes, then 15 s at 100 fps: off the 1% window, still in the 0.1% one.
+        let mut c = FpsCounter::new(1000);
+        let mut t = 0;
+        let mut last = None;
+        for i in 0..=1000 {
+            if i > 0 {
+                t += if i > 997 { 50 } else { 10 };
+            }
+            last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+        }
+        for _ in 0..1500 {
+            t += 10;
+            last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+        }
+        assert!(low_approx(last, 100.0), "got {last:?}");
+        assert!(approx(low01(last), 20.0), "got {last:?}");
+        // 31 s later the spikes leave the 30 s window too.
+        for _ in 0..3100 {
+            t += 10;
+            last = c.on_present(1, 1, Source::Dxgi, t).or(last);
+        }
+        assert!(approx(low01(last), 100.0), "got {last:?}");
     }
 }
