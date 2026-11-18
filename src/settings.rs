@@ -96,13 +96,13 @@ const OVERLAY: usize = 0;
 const MUTE: usize = 1;
 const TABS: [&str; 2] = ["Overlay", "Mute"];
 /// Tab control rect `(x, y, w, h)` in client units.
-const TAB: (i32, i32, i32, i32) = (10, 8, 380, 542);
+const TAB: (i32, i32, i32, i32) = (10, 8, 380, 562);
 /// Client-space origin of every tab page's controls.
 const PAGE_X: i32 = 14;
 const PAGE_Y: i32 = 34;
 /// Group boxes on the Overlay page, `(top, height)` in page units, in build
 /// order. Controls on a page are placed relative to their own group box.
-const OVERLAY_GROUPS: [(i32, i32); 4] = [(0, 176), (192, 124), (324, 124), (456, 54)];
+const OVERLAY_GROUPS: [(i32, i32); 4] = [(0, 176), (192, 144), (344, 124), (476, 54)];
 /// The Mute page's single group box.
 const MUTE_GROUP: (i32, i32) = (0, 200);
 /// Group-box width and the height of a checkbox.
@@ -118,10 +118,11 @@ const SLIDERS: [(i32, i32, u32, u32); 3] = [
     (ID_OPACITY, ID_OPACITY_SLIDER, 0, 100),
     (ID_MIN_FPS, ID_MIN_FPS_SLIDER, 1, 240),
 ];
-const CHECKS: [&str; 12] = [
+const CHECKS: [&str; 13] = [
     "Background in FPS-only layout",
     "FPS",
     "1% low",
+    "0.1% low",
     "CPU usage",
     "CPU clock",
     "GPU usage / temp",
@@ -175,9 +176,9 @@ pub struct Fields<'a> {
     pub min_fps: &'a str,
     pub ignore: &'a str,
     pub mute: &'a str,
-    /// fps_only_background, fps, low, cpu, cpu_clock, gpu, gpu_clock, vram, ram, process,
-    /// fahrenheit, fullscreen_only
-    pub checks: [bool; 12],
+    /// fps_only_background, fps, low, low01, cpu, cpu_clock, gpu, gpu_clock, vram, ram,
+    /// process, fahrenheit, fullscreen_only
+    pub checks: [bool; 13],
     pub toggle_key: u8,
     pub exit_key: u8,
     /// Mute chord key (`0` = off) and modifier index into `MODS`.
@@ -208,6 +209,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         fps_bg,
         fps,
         low,
+        low01,
         cpu,
         cpu_clock,
         gpu,
@@ -235,6 +237,7 @@ pub fn from_fields(f: &Fields) -> Result<Config, String> {
         background_opacity: opacity as f32 / 100.0,
         show_fps: fps,
         show_low: low,
+        show_low01: low01,
         show_cpu: cpu,
         show_cpu_clock: cpu_clock,
         show_gpu: gpu,
@@ -324,7 +327,7 @@ pub fn open(cfg: &Config, on_save: fn(Config)) {
 
         let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         let ex = WS_EX_CONTROLPARENT;
-        let (cw, ch) = (px(400), px(588));
+        let (cw, ch) = (px(400), px(608));
         let mut r = RECT {
             left: 0,
             top: 0,
@@ -667,6 +670,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
     let on = [
         c.show_fps,
         c.show_low,
+        c.show_low01,
         c.show_cpu,
         c.show_cpu_clock,
         c.show_gpu,
@@ -707,7 +711,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
         25,
         ID_ADD_IGNORE,
     );
-    check(CHECKS[11], 14, 98, 352, ID_CHECKS + 11, c.fullscreen_only);
+    check(CHECKS[12], 14, 98, 352, ID_CHECKS + 12, c.fullscreen_only);
 
     // Hotkeys (in game only)
     group(
@@ -778,7 +782,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
     check(
         "Start with Windows",
         14,
-        558,
+        578,
         190,
         ID_AUTOSTART,
         crate::autostart::enabled(),
@@ -789,7 +793,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
         WS_TABSTOP.0 | BS_DEFPUSHBUTTON,
         WINDOW_EX_STYLE(0),
         214,
-        556,
+        576,
         84,
         26,
         IDOK,
@@ -800,7 +804,7 @@ unsafe fn build(hwnd: HWND, font: HFONT, c: &Config, px: &dyn Fn(i32) -> i32) ->
         WS_TABSTOP.0,
         WINDOW_EX_STYLE(0),
         306,
-        556,
+        576,
         84,
         26,
         IDCANCEL,
@@ -856,7 +860,7 @@ unsafe fn save(hwnd: HWND) {
         mute_key,
         mute_mod,
     ) = unsafe {
-        let mut checks = [false; 12];
+        let mut checks = [false; 13];
         for (i, c) in checks.iter_mut().enumerate() {
             *c = SendMessageW(item(hwnd, ID_CHECKS + i as i32), BM_GETCHECK, None, None).0 == 1;
         }
@@ -1167,7 +1171,7 @@ mod tests {
             ignore: " Foo.EXE ,, bar.exe",
             mute: " Game.EXE, ,x.exe",
             checks: [
-                true, true, true, false, true, true, false, true, false, true, true, true,
+                true, true, true, true, false, true, true, false, true, false, true, true, true,
             ],
             toggle_key: toggle,
             exit_key: exit,
@@ -1184,7 +1188,12 @@ mod tests {
         assert_eq!((c.scale, c.background_opacity, c.min_fps), (1.5, 0.4, 30.0));
         assert_eq!(c.ignore, ["foo.exe", "bar.exe"]);
         assert!(
-            c.fps_only_background && c.show_fps && c.show_low && !c.show_cpu && c.show_cpu_clock
+            c.fps_only_background
+                && c.show_fps
+                && c.show_low
+                && c.show_low01
+                && !c.show_cpu
+                && c.show_cpu_clock
         );
         assert!(c.show_gpu);
         assert!(!c.show_gpu_clock && c.show_vram && !c.show_ram && c.show_process && c.fahrenheit);
@@ -1246,7 +1255,7 @@ mod tests {
     #[test]
     fn page_controls_fit_their_groups_and_the_tab_pane() {
         // Bottom of the lowest control in each `OVERLAY_GROUPS` box, group-relative.
-        let content_bottom = [164, BAR_ROW.0 + 4 * BAR_ROW.1 + CHECK_H, 120, 45];
+        let content_bottom = [164, BAR_ROW.0 + 5 * BAR_ROW.1 + CHECK_H, 120, 45];
         for (i, &(top, h)) in OVERLAY_GROUPS.iter().enumerate() {
             assert!(content_bottom[i] <= h, "group {i} too short");
             if let Some(&(next, _)) = OVERLAY_GROUPS.get(i + 1) {

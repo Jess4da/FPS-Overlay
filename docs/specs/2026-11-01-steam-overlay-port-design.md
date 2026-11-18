@@ -98,6 +98,7 @@ The mute chord (`mute_key` + `mute_mod`, default `Alt+M`) is polled the same way
 - Groups in order, each enabled by config, separated by `" | "` only between drawn groups:
   1. `FPS` `180` (`%.0f`; `---` when `None`)
   1b. `1%` `98` — 1% low, only when `show_low=1` (see *1% low*); label color = FPS label, value color = FPS tiers, `---` when `None`
+  1c. `0.1%` `45` — 0.1% low, only when `show_low01=1` (see *0.1% low*); same colors as 1b
   2. `CPU` `15%`
   3. `5545 MHz` CPU clock (own group, only when Some)
   4. `GPU` `25%` ` 54°C` (temp omitted when `None`; `N/A` when GPU% `None`)
@@ -116,6 +117,7 @@ The mute chord (`mute_key` + `mute_mod`, default `Alt+M`) is polled the same way
 | background_opacity | 100 | 0–100 |
 | show_fps, show_cpu, show_cpu_clock, show_gpu, show_gpu_clock, show_vram, show_ram, show_process | 1 | 0/1 |
 | show_low | 0 | 0/1 (Steam-like only: 1% low group) |
+| show_low01 | 0 | 0/1 (Steam-like only: 0.1% low group) |
 | fahrenheit | 0 | 0/1 |
 | min_fps | 20 | 1–1000 |
 | fullscreen_only | 0 | 0/1 |
@@ -128,10 +130,18 @@ Missing file → defaults (and write a default file). Out-of-range or unparsable
 ## 1% low *(added 2026-11-15)*
 - **Definition:** 99th-percentile frame time (nearest rank: ascending index `ceil(0.99·n) − 1`) over the frames of the last **10 s**, shown as FPS = `freq / gap`. Fewer than **100** frames in the window → `None` (`---`).
 - **Frame time:** QPC delta between consecutive present events of the target pid, from one source only: the highest-priority source seen since the target became current (D3D9 > DXGI > kernel, same as counting). A higher-priority source appearing clears the history and takes over. A lower source takes over (clearing the history) once the current one has been silent for > 2 s. Gaps > 2 s (pause/stall) are not recorded.
-- **Storage:** fixed ring of 4096 `u32` gaps + 4096 `u32` scratch, allocated once with the counter (never in the callback). *(ponytail: above ~400 fps the 4096-frame ring covers < 10 s; raise the capacity if that matters.)*
-- **Cost:** computed once per 1 s window (walk back ≤ 4096 gaps, copy, `select_nth_unstable`), always, regardless of `show_low` — a few µs/s, below the cost of a gate flag.
+- **Storage:** fixed ring of 12288 `u32` gaps + 12288 `u32` scratch (96 KB), allocated once with the counter (never in the callback), shared with the 0.1% low. *(ponytail: above ~400 fps the ring covers < 30 s; raise the capacity if that matters.)*
+- **Cost:** computed once per 1 s window (walk back the 10 s of gaps, copy, `select_nth_unstable`), always, regardless of `show_low` — a few µs/s, below the cost of a gate flag.
 - **Contract:** `Shared.low_bits` (f32 bits, `0` = none) is stored with `fps_bits`/`sample_pid`, before the `Release` store of `sample_qpc`. UI shows it only when the FPS sample itself is shown (same pid, fresh).
 - **FPS-Only layout:** never shows 1% low.
+
+## 0.1% low *(added 2026-11-18)*
+- **Purpose:** catch rare stutters that the 1% low hides.
+- **Definition:** 99.9th-percentile frame time (nearest rank: ascending index `ceil(0.999·n) − 1`) over the frames of the last **30 s**, shown as FPS. Fewer than **1000** frames in the window → `None` (`---`).
+- **Frame time, storage, source rules:** the same ring as the 1% low; the 1% low walks back 10 s, the 0.1% low 30 s.
+- **Cost:** a second walk/copy/select per 1 s window, always, regardless of `show_low01`. Measured ~23 µs (0.1%) + ~8 µs (1%) per second on a full ring (release build).
+- **Contract:** `Shared.low01_bits` (f32 bits, `0` = none), stored with `low_bits`, before the `Release` store of `sample_qpc`; shown only when the FPS sample is shown.
+- **FPS-Only layout:** never shows 0.1% low.
 
 ## Layout: FPS-Only *(builder's call on look, modeled on NVIDIA's FPS counter)*
 - One run: the FPS number only (`%.0f`, `---` when `None`). No label, no process line.
